@@ -1,0 +1,5 @@
+{
+  "name": "Bilingual Transaction Ledger",
+  "description": "A specialized offline-first transaction digitizer for Mandarin-speaking users, storing data in English Excel workbooks.",
+  "requestFramePermissions": []
+}

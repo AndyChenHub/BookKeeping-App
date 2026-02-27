@@ -1,0 +1,4 @@
+# Excel Storage Directory
+/data/*.xlsx
+!/data/dictionary.xlsx
+!/data/config.xlsx

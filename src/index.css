@@ -1,0 +1,33 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer base {
+  body {
+    @apply bg-zinc-50 text-zinc-900 antialiased overflow-hidden text-xl;
+  }
+}
+
+.kiosk-button {
+  @apply flex flex-col items-center justify-center p-8 rounded-3xl border-2 transition-all active:scale-95 text-center;
+}
+
+.kiosk-input {
+  @apply w-full p-8 text-4xl rounded-[32px] border-4 border-zinc-200 focus:border-emerald-500 focus:ring-12 focus:ring-emerald-500/10 outline-none transition-all font-black;
+  padding-left: 6rem;
+}
+
+.kiosk-input-no-icon {
+  @apply w-full p-8 text-4xl rounded-[32px] border-4 border-zinc-200 focus:border-emerald-500 focus:ring-12 focus:ring-emerald-500/10 outline-none transition-all font-black;
+}
+
+.label-zh {
+  @apply text-5xl font-black text-zinc-900 block mb-2 leading-tight;
+}
+
+.label-en {
+  @apply text-xl font-bold text-zinc-400 block mb-4 uppercase tracking-wider;
+}
