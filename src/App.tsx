@@ -27,13 +27,22 @@ import {
   X,
   Wifi,
   Copy,
+  Receipt,
+  Building2,
+  Eye,
+  Clock,
+  CheckSquare,
+  Square,
 } from "lucide-react";
 import { format, subDays, addMonths, subMonths, parseISO, isValid } from "date-fns";
 import type {
   ActiveTab,
   BackupManifest,
   BackupsResponse,
+  BusinessProfile,
   ConfigData,
+  InvoiceRecord,
+  InvoicesResponse,
   Language,
   ServerInfo,
   Transaction,
@@ -55,6 +64,26 @@ import {
   EditTransactionModal,
   ConfirmModal,
 } from "./components/Modals";
+import {
+  InvoiceEditorModal,
+  InvoicePreviewModal,
+  BusinessProfileModal,
+  buildDraftFromRecords,
+  buildDraftFromInvoice,
+  type InvoiceDraft,
+} from "./components/InvoiceModals";
+
+const emptyBusinessProfile: BusinessProfile = {
+  businessName: "",
+  businessAbn: "",
+  businessPhone: "",
+  businessEmail: "",
+  businessAddress: "",
+  bankAccountName: "",
+  bankBsb: "",
+  bankAccountNumber: "",
+  invoicePrefix: "INV-",
+};
 
 export default function App() {
   const [lang, setLang] = useState<Language>(() => {
@@ -80,6 +109,7 @@ export default function App() {
     descriptions: {},
     customBooksPath: "",
     booksPath: "",
+    businessProfile: emptyBusinessProfile,
   });
   const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null);
   const [recordsMonth, setRecordsMonth] = useState<string>(() => format(new Date(), "yyyy-MM"));
@@ -92,6 +122,20 @@ export default function App() {
     summary: { count: 0, total: 0, cashTotal: 0, cardTotal: 0, partsTotal: 0, gstTotal: 0 },
   });
   const [todayTransactions, setTodayTransactions] = useState<Transaction[]>([]);
+  const [invoicesData, setInvoicesData] = useState<InvoicesResponse>({
+    invoices: [],
+    summary: {
+      totalCount: 0,
+      unpaidCount: 0,
+      paidCount: 0,
+      unpaidAmount: 0,
+      paidAmount: 0,
+      totalAmount: 0,
+    },
+    nextInvoiceNumber: "INV-0001",
+    fileExists: false,
+    recordInvoiceMap: {},
+  });
   const [backupsData, setBackupsData] = useState<BackupsResponse>({
     backups: [],
     backedUpToday: false,
@@ -111,12 +155,20 @@ export default function App() {
   const [validationHint, setValidationHint] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  // Records Filter State
+  // Records Filter & Multi-select for Invoice State
   const [paymentFilter, setPaymentFilter] = useState<"all" | "cash" | "card">("all");
   const [searchQuery, setSearchQuery] = useState("");
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
+  const [selectedRecordIds, setSelectedRecordIds] = useState<Set<string>>(new Set());
+
+  // Invoices Filter State
+  const [invoiceStatusFilter, setInvoiceStatusFilter] = useState<"all" | "unpaid" | "paid">("all");
+  const [invoiceSearch, setInvoiceSearch] = useState("");
 
   // Manage Lists Sub-tab in Settings
-  const [manageSection, setManageSection] = useState<"description" | "location" | "agent">("description");
+  const [manageSection, setManageSection] = useState<"description" | "location" | "agent">(
+    "description"
+  );
   const [manualPathInput, setManualPathInput] = useState("");
   const [editingFolderManually, setEditingFolderManually] = useState(false);
 
@@ -128,8 +180,14 @@ export default function App() {
   const [editingRecord, setEditingRecord] = useState<Transaction | null>(null);
   const [deletingRecord, setDeletingRecord] = useState<Transaction | null>(null);
   const [restoringBackup, setRestoringBackup] = useState<BackupManifest | null>(null);
-  const [actionBusy, setActionBusy] = useState(false);
 
+  // Invoice Modals
+  const [invoiceEditorDraft, setInvoiceEditorDraft] = useState<InvoiceDraft | null>(null);
+  const [previewInvoiceId, setPreviewInvoiceId] = useState<string | null>(null);
+  const [deletingInvoice, setDeletingInvoice] = useState<InvoiceRecord | null>(null);
+  const [showBusinessModal, setShowBusinessModal] = useState(false);
+
+  const [actionBusy, setActionBusy] = useState(false);
   const [toast, setToast] = useState<{ title: string; subtitle?: string } | null>(null);
   const [errorBanner, setErrorBanner] = useState<string | null>(null);
   const [copiedInlineUrl, setCopiedInlineUrl] = useState(false);
@@ -148,16 +206,20 @@ export default function App() {
       const todayKey = format(new Date(), "yyyy-MM-dd");
 
       try {
-        const [cfgRes, txRes, bkpRes, infoRes] = await Promise.all([
+        const [cfgRes, txRes, invRes, bkpRes, infoRes] = await Promise.all([
           fetch("/api/config"),
           fetch(`/api/transactions?month=${encodeURIComponent(mKey)}`),
+          fetch("/api/invoices"),
           fetch("/api/backups"),
           fetch("/api/server-info"),
         ]);
 
         if (cfgRes.ok) {
           const cfgJson: ConfigData = await cfgRes.json();
-          setConfig(cfgJson);
+          setConfig({
+            ...cfgJson,
+            businessProfile: cfgJson.businessProfile || emptyBusinessProfile,
+          });
         }
         if (txRes.ok) {
           const txJson: TransactionsResponse = await txRes.json();
@@ -165,12 +227,18 @@ export default function App() {
           if (mKey === currentMonthKey) {
             setTodayTransactions(txJson.transactions.filter((r) => r.date === todayKey));
           } else {
-            const curRes = await fetch(`/api/transactions?month=${encodeURIComponent(currentMonthKey)}`);
+            const curRes = await fetch(
+              `/api/transactions?month=${encodeURIComponent(currentMonthKey)}`
+            );
             if (curRes.ok) {
               const curJson: TransactionsResponse = await curRes.json();
               setTodayTransactions(curJson.transactions.filter((r) => r.date === todayKey));
             }
           }
+        }
+        if (invRes.ok) {
+          const invJson: InvoicesResponse = await invRes.json();
+          setInvoicesData(invJson);
         }
         if (bkpRes.ok) {
           const bkpJson: BackupsResponse = await bkpRes.json();
@@ -211,7 +279,11 @@ export default function App() {
     };
   }, [fetchAllData]);
 
-  // Remember Location & Agent smoothly
+  const previewInvoice = useMemo(
+    () => invoicesData.invoices.find((i) => i.id === previewInvoiceId) || null,
+    [invoicesData.invoices, previewInvoiceId]
+  );
+
   const handleSelectLocation = (val: string) => {
     setLocation(val);
     localStorage.setItem("bk_last_loc", val);
@@ -232,7 +304,6 @@ export default function App() {
     });
   };
 
-  // Build standardized English description for Excel storage
   const englishDescriptionForSave = useMemo(() => {
     const items = Array.from(selectedDescriptions).map((zh) => config.descriptions[zh] || zh);
     if (extraNote.trim()) {
@@ -241,7 +312,6 @@ export default function App() {
     return items.join(", ");
   }, [selectedDescriptions, config.descriptions, extraNote]);
 
-  // Build localized preview for current screen language
   const localizedSelectedPreview = useMemo(() => {
     const items = Array.from(selectedDescriptions).map((zh) =>
       lang === "zh" ? zh : config.descriptions[zh] || zh
@@ -296,7 +366,6 @@ export default function App() {
         throw new Error(data.error || "Failed to save transaction.");
       }
 
-      // Clear per-transaction fields while keeping Date, Payment, Location, Agent ready for quick repeat entry
       setSelectedDescriptions(new Set());
       setExtraNote("");
       setTotalAmount("");
@@ -334,7 +403,10 @@ export default function App() {
     }
   };
 
-  const handleDeleteConfigItem = async (type: "description" | "location" | "agent", value: string) => {
+  const handleDeleteConfigItem = async (
+    type: "description" | "location" | "agent",
+    value: string
+  ) => {
     setErrorBanner(null);
     const res = await fetch("/api/config/delete", {
       method: "POST",
@@ -385,7 +457,9 @@ export default function App() {
     try {
       const mKey = deletingRecord.date.slice(0, 7);
       const res = await fetch(
-        `/api/transactions/${encodeURIComponent(deletingRecord.id)}?month=${encodeURIComponent(mKey)}`,
+        `/api/transactions/${encodeURIComponent(deletingRecord.id)}?month=${encodeURIComponent(
+          mKey
+        )}`,
         { method: "DELETE" }
       );
       const data = await res.json();
@@ -401,6 +475,109 @@ export default function App() {
       setActionBusy(false);
     }
   };
+
+  // --- INVOICE HANDLERS ---
+
+  const openCreateInvoiceForRecords = (records: Transaction[]) => {
+    const draft = buildDraftFromRecords(records, invoicesData.nextInvoiceNumber);
+    setInvoiceEditorDraft(draft);
+  };
+
+  const handleSaveInvoice = async (draft: InvoiceDraft): Promise<InvoiceRecord> => {
+    setErrorBanner(null);
+    const isEdit = Boolean(draft.id);
+    const url = isEdit
+      ? `/api/invoices/${encodeURIComponent(draft.id!)}`
+      : "/api/invoices";
+    const method = isEdit ? "PUT" : "POST";
+
+    const res = await fetch(url, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(draft),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setErrorBanner(data.error || "Failed to save invoice.");
+      throw new Error(data.error);
+    }
+
+    setMultiSelectMode(false);
+    setSelectedRecordIds(new Set());
+    showToast(t.invoiceSavedToast);
+    await fetchAllData();
+
+    if (!isEdit && data.invoice?.id) {
+      setActiveTab("invoices");
+      setPreviewInvoiceId(data.invoice.id);
+    }
+    return data.invoice;
+  };
+
+  const handleToggleInvoiceStatus = async (inv: InvoiceRecord) => {
+    setErrorBanner(null);
+    const nextStatus = inv.status === "Paid" ? "Unpaid" : "Paid";
+    const res = await fetch(`/api/invoices/${encodeURIComponent(inv.id)}/status`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: nextStatus }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setErrorBanner(data.error || "Could not update invoice status.");
+      return;
+    }
+    showToast(nextStatus === "Paid" ? t.invoiceMarkedPaidToast : t.invoiceMarkedUnpaidToast);
+    await fetchAllData();
+  };
+
+  const handleConfirmDeleteInvoice = async () => {
+    if (!deletingInvoice) return;
+    setActionBusy(true);
+    setErrorBanner(null);
+    try {
+      const res = await fetch(`/api/invoices/${encodeURIComponent(deletingInvoice.id)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to delete invoice.");
+      if (previewInvoiceId === deletingInvoice.id) setPreviewInvoiceId(null);
+      setDeletingInvoice(null);
+      await fetchAllData();
+    } catch (err) {
+      setErrorBanner((err as Error).message);
+      setDeletingInvoice(null);
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleSaveBusinessProfile = async (next: BusinessProfile) => {
+    setErrorBanner(null);
+    const res = await fetch("/api/config/business", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(next),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      setErrorBanner(data.error || "Could not save business info.");
+      throw new Error(data.error);
+    }
+    showToast(t.savedSuccessTitle);
+    await fetchAllData();
+  };
+
+  const toggleSelectRecordForInvoice = (id: string) => {
+    setSelectedRecordIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  // --- BACKUP & FOLDER HANDLERS ---
 
   const handleManualBackup = async () => {
     setActionBusy(true);
@@ -439,11 +616,11 @@ export default function App() {
     }
   };
 
-  const handleOpenFolderOrExcel = async (month?: string) => {
+  const handleOpenFolderOrExcel = async (opts?: { month?: string; invoices?: boolean }) => {
     await fetch("/api/system/open-folder", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ month }),
+      body: JSON.stringify(opts || {}),
     });
   };
 
@@ -521,6 +698,29 @@ export default function App() {
     return groups;
   }, [filteredTransactions]);
 
+  // Filtered Invoices for Tab 3
+  const filteredInvoices = useMemo(() => {
+    const q = invoiceSearch.trim().toLowerCase();
+    return invoicesData.invoices.filter((inv) => {
+      if (invoiceStatusFilter === "unpaid" && inv.status !== "Unpaid") return false;
+      if (invoiceStatusFilter === "paid" && inv.status !== "Paid") return false;
+      if (!q) return true;
+      const itemsText = inv.items.map((i) => i.description).join(" ").toLowerCase();
+      const zhItemsText = inv.items
+        .map((i) => localizeDescription(i.description, config.descriptions, "zh"))
+        .join(" ")
+        .toLowerCase();
+      return (
+        inv.invoiceNumber.toLowerCase().includes(q) ||
+        inv.clientName.toLowerCase().includes(q) ||
+        inv.clientDetails.toLowerCase().includes(q) ||
+        inv.notes.toLowerCase().includes(q) ||
+        itemsText.includes(q) ||
+        zhItemsText.includes(q)
+      );
+    });
+  }, [invoicesData.invoices, invoiceStatusFilter, invoiceSearch, config.descriptions]);
+
   const todayStr = format(new Date(), "yyyy-MM-dd");
   const yesterdayStr = format(subDays(new Date(), 1), "yyyy-MM-dd");
   const currentMonthStr = format(new Date(), "yyyy-MM");
@@ -568,13 +768,19 @@ export default function App() {
             </div>
           </div>
 
-          {/* Desktop Center Segmented Control */}
+          {/* Desktop Center Segmented Control (4 Tabs) */}
           <nav className="hidden md:flex items-center bg-[#E8E8ED]/90 p-1 rounded-2xl">
             {(
               [
-                { id: "entry", label: t.tabEntry, icon: PlusCircle },
-                { id: "records", label: t.tabRecords, icon: BookOpen },
-                { id: "backup", label: t.tabBackup, icon: ShieldCheck },
+                { id: "entry", label: t.tabEntry, icon: PlusCircle, badge: 0 },
+                { id: "records", label: t.tabRecords, icon: BookOpen, badge: 0 },
+                {
+                  id: "invoices",
+                  label: t.tabInvoices,
+                  icon: Receipt,
+                  badge: invoicesData.summary.unpaidCount,
+                },
+                { id: "backup", label: t.tabBackup, icon: ShieldCheck, badge: 0 },
               ] as const
             ).map((tab) => {
               const Icon = tab.icon;
@@ -585,7 +791,7 @@ export default function App() {
                   type="button"
                   onClick={() => setActiveTab(tab.id)}
                   className={[
-                    "px-5 py-2.5 rounded-xl text-base font-semibold flex items-center gap-2 transition-all",
+                    "px-4 lg:px-5 py-2.5 rounded-xl text-base font-semibold flex items-center gap-2 transition-all",
                     active
                       ? "bg-white text-[#1D1D1F] shadow-sm"
                       : "text-[#515154] hover:text-[#1D1D1F]",
@@ -593,6 +799,11 @@ export default function App() {
                 >
                   <Icon size={20} className={active ? "text-[#007AFF]" : "text-[#86868B]"} />
                   <span>{tab.label}</span>
+                  {tab.badge > 0 && (
+                    <span className="px-2 py-0.5 rounded-full bg-[#FF9500] text-white text-xs font-bold tabular-nums">
+                      {tab.badge}
+                    </span>
+                  )}
                 </button>
               );
             })}
@@ -607,11 +818,10 @@ export default function App() {
                 className="h-11 px-3.5 sm:px-4 rounded-2xl bg-[#007AFF]/10 hover:bg-[#007AFF]/15 text-[#007AFF] font-semibold text-base flex items-center gap-2 transition active:scale-95"
               >
                 <Smartphone size={20} />
-                <span className="hidden sm:inline">{t.connectPhoneBtn}</span>
+                <span className="hidden lg:inline">{t.connectPhoneBtn}</span>
               </button>
             )}
 
-            {/* Clean 1-Tap Language Switcher */}
             <div
               className="h-11 bg-[#E8E8ED] p-1 rounded-2xl flex items-center"
               role="group"
@@ -646,7 +856,7 @@ export default function App() {
         </div>
       </header>
 
-      {/* Error Alert Banner (e.g. if Excel file is currently locked open in Microsoft Excel) */}
+      {/* Error Alert Banner */}
       {errorBanner && (
         <div className="max-w-6xl w-full mx-auto px-4 sm:px-6 pt-4">
           <div className="bg-[#FF3B30]/10 border border-[#FF3B30]/25 text-[#C92A2A] rounded-2xl p-4 flex items-start justify-between gap-3">
@@ -669,10 +879,12 @@ export default function App() {
       <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 pt-5 sm:pt-7">
         {/* ================= TAB 1: NEW ENTRY ================= */}
         {activeTab === "entry" && (
-          <form onSubmit={handleSaveEntry} className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-            {/* Left Column on Desktop: Step 1 (Items) + Step 3 (Details) */}
+          <form
+            onSubmit={handleSaveEntry}
+            className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start"
+          >
             <div className="lg:col-span-7 space-y-6">
-              {/* STEP 1: WHAT WAS THIS FOR? */}
+              {/* STEP 1 */}
               <section className="apple-card p-5 sm:p-7">
                 <div className="flex items-start justify-between gap-3 mb-4">
                   <div>
@@ -713,7 +925,9 @@ export default function App() {
                         <span
                           className={[
                             "w-7 h-7 rounded-full flex items-center justify-center shrink-0 transition",
-                            selected ? "bg-white text-[#007AFF]" : "bg-black/[0.06] text-transparent",
+                            selected
+                              ? "bg-white text-[#007AFF]"
+                              : "bg-black/[0.06] text-transparent",
                           ].join(" ")}
                         >
                           <Check size={18} strokeWidth={3} />
@@ -732,7 +946,6 @@ export default function App() {
                   </button>
                 </div>
 
-                {/* Optional Extra Note */}
                 <div className="mt-4">
                   <input
                     type="text"
@@ -746,7 +959,6 @@ export default function App() {
                   />
                 </div>
 
-                {/* Selected Preview Strip */}
                 <div className="mt-4 px-4 py-3 rounded-2xl bg-[#F5F5F7]/80 flex items-center gap-2 text-lg">
                   <span className="font-semibold text-[#515154] shrink-0">{t.selectedLabel}</span>
                   {localizedSelectedPreview ? (
@@ -759,11 +971,10 @@ export default function App() {
                 </div>
               </section>
 
-              {/* STEP 3 ON DESKTOP (Shown below Step 2 on Mobile via CSS order if desired, or clean flow) */}
+              {/* STEP 3 DESKTOP */}
               <section className="hidden lg:block apple-card p-5 sm:p-7 space-y-5">
                 <h2 className="text-2xl font-bold text-[#1D1D1F]">{t.stepDetails}</h2>
 
-                {/* Date Quick Selector */}
                 <div>
                   <label className="block text-base font-semibold text-[#515154] mb-2.5">
                     {t.dateLabel}
@@ -813,7 +1024,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Location & Person */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
                     <label className="block text-base font-semibold text-[#515154] mb-2">
@@ -860,13 +1070,11 @@ export default function App() {
               </section>
             </div>
 
-            {/* Right Column on Desktop: Step 2 (Amount & Payment) + Mobile Step 3 + Save Button + Saved Today */}
             <div className="lg:col-span-5 space-y-6">
-              {/* STEP 2: AMOUNT & PAYMENT */}
+              {/* STEP 2 */}
               <section className="apple-card p-5 sm:p-7 space-y-5">
                 <h2 className="text-2xl font-bold text-[#1D1D1F]">{t.stepAmount}</h2>
 
-                {/* Giant Total Amount Input */}
                 <div>
                   <label className="block text-base font-semibold text-[#515154] mb-2">
                     {t.totalAmount}
@@ -901,7 +1109,6 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Cash vs Card */}
                 <div>
                   <label className="block text-base font-semibold text-[#515154] mb-2">
                     {t.paymentMethod}
@@ -936,14 +1143,15 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Optional Parts & GST */}
                 <div className="grid grid-cols-2 gap-3 pt-1">
                   <div>
                     <label className="block text-sm sm:text-base font-semibold text-[#515154] mb-2">
                       {t.partsCost}
                     </label>
                     <div className="relative flex items-center">
-                      <span className="absolute left-4 text-xl font-semibold text-[#86868B]">$</span>
+                      <span className="absolute left-4 text-xl font-semibold text-[#86868B]">
+                        $
+                      </span>
                       <input
                         type="number"
                         step="0.01"
@@ -962,7 +1170,9 @@ export default function App() {
                       {t.gstAmount}
                     </label>
                     <div className="relative flex items-center">
-                      <span className="absolute left-4 text-xl font-semibold text-[#86868B]">$</span>
+                      <span className="absolute left-4 text-xl font-semibold text-[#86868B]">
+                        $
+                      </span>
                       <input
                         type="number"
                         step="0.01"
@@ -977,12 +1187,13 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Helpful 1-Tap GST Shortcut */}
                 {parseFloat(totalAmount) > 0 && (
                   <div className="flex flex-wrap items-center gap-2">
                     <button
                       type="button"
-                      onClick={() => setGstAmount(((parseFloat(totalAmount) || 0) / 11).toFixed(2))}
+                      onClick={() =>
+                        setGstAmount(((parseFloat(totalAmount) || 0) / 11).toFixed(2))
+                      }
                       className="px-3.5 py-1.5 rounded-xl bg-[#007AFF]/10 hover:bg-[#007AFF]/15 text-[#007AFF] text-sm font-semibold flex items-center gap-1.5 transition"
                     >
                       <Sparkles size={15} />
@@ -1003,7 +1214,7 @@ export default function App() {
                 )}
               </section>
 
-              {/* STEP 3 ON MOBILE/TABLET (Natural 1 -> 2 -> 3 order on touchscreens!) */}
+              {/* STEP 3 MOBILE */}
               <section className="lg:hidden apple-card p-5 sm:p-7 space-y-5">
                 <h2 className="text-2xl font-bold text-[#1D1D1F]">{t.stepDetails}</h2>
 
@@ -1101,7 +1312,7 @@ export default function App() {
                 </div>
               </section>
 
-              {/* Validation Gentle Guidance + Primary Save Button */}
+              {/* Save Button */}
               <div className="space-y-3">
                 {validationHint && (
                   <div className="px-4 py-3 rounded-2xl bg-[#FF9500]/12 border border-[#FF9500]/30 text-[#B25E00] text-lg font-semibold flex items-center gap-2.5">
@@ -1126,7 +1337,7 @@ export default function App() {
                 </button>
               </div>
 
-              {/* Reassuring "Saved Today" Card */}
+              {/* Saved Today Card (with quick Invoice button!) */}
               <section className="apple-card p-5 sm:p-6">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-lg font-bold text-[#1D1D1F]">{t.savedTodayTitle}</h3>
@@ -1146,35 +1357,58 @@ export default function App() {
                   <p className="text-base text-[#86868B] py-3">{t.savedTodayEmpty}</p>
                 ) : (
                   <div className="divide-y divide-black/[0.06]">
-                    {todayTransactions.slice(0, 5).map((tx) => (
-                      <div
-                        key={tx.id}
-                        className="py-3 flex items-center justify-between gap-3"
-                      >
-                        <div className="min-w-0">
-                          <p className="text-lg font-semibold text-[#1D1D1F] truncate">
-                            {localizeDescription(tx.description, config.descriptions, lang)}
-                          </p>
-                          <p className="text-sm text-[#86868B] truncate">
-                            {localizePayment(tx.paymentMethod, lang)}
-                            {tx.location ? ` · ${tx.location}` : ""}
-                            {tx.agent ? ` · ${tx.agent}` : ""}
-                          </p>
+                    {todayTransactions.slice(0, 5).map((tx) => {
+                      const linkedInv = invoicesData.recordInvoiceMap[tx.id];
+                      return (
+                        <div
+                          key={tx.id}
+                          className="py-3 flex items-center justify-between gap-3"
+                        >
+                          <div className="min-w-0">
+                            <p className="text-lg font-semibold text-[#1D1D1F] truncate">
+                              {localizeDescription(tx.description, config.descriptions, lang)}
+                            </p>
+                            <p className="text-sm text-[#86868B] truncate">
+                              {localizePayment(tx.paymentMethod, lang)}
+                              {tx.location ? ` · ${tx.location}` : ""}
+                              {tx.agent ? ` · ${tx.agent}` : ""}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className="text-lg font-bold tabular-nums text-[#1D1D1F]">
+                              ${tx.total.toFixed(2)}
+                            </span>
+                            {linkedInv ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActiveTab("invoices");
+                                  setPreviewInvoiceId(linkedInv.invoiceId);
+                                }}
+                                className="px-2.5 py-1.5 rounded-xl bg-[#007AFF]/10 text-xs font-bold text-[#007AFF]"
+                              >
+                                {linkedInv.invoiceNumber}
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => openCreateInvoiceForRecords([tx])}
+                                className="px-2.5 py-1.5 rounded-xl bg-[#007AFF]/10 hover:bg-[#007AFF]/18 text-xs font-bold text-[#007AFF]"
+                              >
+                                {t.createInvoiceShortBtn}
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => setEditingRecord(tx)}
+                              className="px-2.5 py-1.5 rounded-xl bg-[#F5F5F7] hover:bg-[#E8E8ED] text-xs font-semibold text-[#515154]"
+                            >
+                              {t.editBtn}
+                            </button>
+                          </div>
                         </div>
-                        <div className="flex items-center gap-3 shrink-0">
-                          <span className="text-xl font-bold tabular-nums text-[#1D1D1F]">
-                            ${tx.total.toFixed(2)}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => setEditingRecord(tx)}
-                            className="px-3 py-1.5 rounded-xl bg-[#F5F5F7] hover:bg-[#E8E8ED] text-sm font-semibold text-[#007AFF]"
-                          >
-                            {t.editBtn}
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </section>
@@ -1185,7 +1419,7 @@ export default function App() {
         {/* ================= TAB 2: RECORDS ================= */}
         {activeTab === "records" && (
           <div className="space-y-6">
-            {/* Month Bar & Export */}
+            {/* Month Bar & Actions */}
             <div className="apple-card p-4 sm:p-5 flex flex-col sm:flex-row items-center justify-between gap-4">
               <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-start">
                 <button
@@ -1212,7 +1446,7 @@ export default function App() {
                 </button>
               </div>
 
-              <div className="flex items-center gap-2.5 w-full sm:w-auto justify-end">
+              <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto justify-end">
                 {recordsMonth !== currentMonthStr && (
                   <button
                     type="button"
@@ -1223,12 +1457,49 @@ export default function App() {
                   </button>
                 )}
 
+                {monthData.transactions.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setMultiSelectMode(!multiSelectMode);
+                      setSelectedRecordIds(new Set());
+                    }}
+                    className={[
+                      "h-12 px-4 rounded-2xl font-semibold text-base flex items-center gap-2 transition",
+                      multiSelectMode
+                        ? "bg-[#1D1D1F] text-white"
+                        : "bg-[#007AFF]/10 hover:bg-[#007AFF]/18 text-[#007AFF]",
+                    ].join(" ")}
+                  >
+                    <Receipt size={19} />
+                    <span>
+                      {multiSelectMode ? t.cancelSelectModeBtn : t.selectMultiInvoiceBtn}
+                    </span>
+                  </button>
+                )}
+
+                {multiSelectMode && selectedRecordIds.size > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const chosen = monthData.transactions.filter((r) =>
+                        selectedRecordIds.has(r.id)
+                      );
+                      openCreateInvoiceForRecords(chosen);
+                    }}
+                    className="h-12 px-5 rounded-2xl bg-[#007AFF] hover:bg-[#0066D6] text-white font-bold text-base flex items-center gap-2 shadow-md shadow-[#007AFF]/20"
+                  >
+                    <Plus size={20} />
+                    <span>{t.createFromSelectedBtn(selectedRecordIds.size)}</span>
+                  </button>
+                )}
+
                 {monthData.fileExists &&
                   (serverInfo?.isLocalMachine ? (
                     <button
                       type="button"
-                      onClick={() => handleOpenFolderOrExcel(recordsMonth)}
-                      className="flex-1 sm:flex-initial h-12 px-5 rounded-2xl bg-[#1E9E49]/12 hover:bg-[#1E9E49]/20 text-[#1E9E49] font-semibold text-base flex items-center justify-center gap-2 transition"
+                      onClick={() => handleOpenFolderOrExcel({ month: recordsMonth })}
+                      className="h-12 px-5 rounded-2xl bg-[#1E9E49]/12 hover:bg-[#1E9E49]/20 text-[#1E9E49] font-semibold text-base flex items-center justify-center gap-2 transition"
                     >
                       <FileSpreadsheet size={20} />
                       <span>{t.openExcelBtn}</span>
@@ -1236,7 +1507,7 @@ export default function App() {
                   ) : (
                     <a
                       href={`/api/transactions/download?month=${encodeURIComponent(recordsMonth)}`}
-                      className="flex-1 sm:flex-initial h-12 px-5 rounded-2xl bg-[#1E9E49]/12 hover:bg-[#1E9E49]/20 text-[#1E9E49] font-semibold text-base flex items-center justify-center gap-2 transition"
+                      className="h-12 px-5 rounded-2xl bg-[#1E9E49]/12 hover:bg-[#1E9E49]/20 text-[#1E9E49] font-semibold text-base flex items-center justify-center gap-2 transition"
                     >
                       <Download size={20} />
                       <span>{t.downloadExcelBtn}</span>
@@ -1357,77 +1628,135 @@ export default function App() {
                           config.descriptions,
                           lang
                         );
+                        const linkedInv = invoicesData.recordInvoiceMap[tx.id];
+                        const isChecked = selectedRecordIds.has(tx.id);
+
                         return (
                           <div
                             key={tx.id}
-                            className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 hover:bg-[#FAFAFC] transition"
+                            onClick={
+                              multiSelectMode
+                                ? () => toggleSelectRecordForInvoice(tx.id)
+                                : undefined
+                            }
+                            className={[
+                              "p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 transition",
+                              multiSelectMode ? "cursor-pointer" : "",
+                              isChecked ? "bg-[#007AFF]/[0.06]" : "hover:bg-[#FAFAFC]",
+                            ].join(" ")}
                           >
-                            <div className="space-y-1.5 min-w-0 flex-1">
-                              <div className="flex items-center gap-2.5 flex-wrap">
-                                <span className="text-xl font-bold text-[#1D1D1F] break-words">
-                                  {displayDesc}
-                                </span>
-                                <span
-                                  className={[
-                                    "px-2.5 py-0.5 rounded-lg text-sm font-semibold",
-                                    isCard
-                                      ? "bg-[#007AFF]/12 text-[#007AFF]"
-                                      : "bg-[#1E9E49]/12 text-[#1E9E49]",
-                                  ].join(" ")}
-                                >
-                                  {localizePayment(tx.paymentMethod, lang)}
-                                </span>
-                              </div>
+                            <div className="flex items-start gap-3.5 min-w-0 flex-1">
+                              {multiSelectMode && (
+                                <div className="pt-1 text-[#007AFF] shrink-0">
+                                  {isChecked ? <CheckSquare size={26} /> : <Square size={26} />}
+                                </div>
+                              )}
 
-                              <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-base text-[#515154]">
-                                {tx.location && (
-                                  <span className="inline-flex items-center gap-1">
-                                    <MapPin size={16} className="text-[#86868B]" />
-                                    {tx.location}
+                              <div className="space-y-1.5 min-w-0 flex-1">
+                                <div className="flex items-center gap-2.5 flex-wrap">
+                                  <span className="text-xl font-bold text-[#1D1D1F] break-words">
+                                    {displayDesc}
                                   </span>
-                                )}
-                                {tx.agent && (
-                                  <span className="inline-flex items-center gap-1">
-                                    <User size={16} className="text-[#86868B]" />
-                                    {tx.agent}
+                                  <span
+                                    className={[
+                                      "px-2.5 py-0.5 rounded-lg text-sm font-semibold",
+                                      isCard
+                                        ? "bg-[#007AFF]/12 text-[#007AFF]"
+                                        : "bg-[#1E9E49]/12 text-[#1E9E49]",
+                                    ].join(" ")}
+                                  >
+                                    {localizePayment(tx.paymentMethod, lang)}
                                   </span>
-                                )}
-                                {tx.amount > 0 && (
-                                  <span>
-                                    {t.partsShort}: ${tx.amount.toFixed(2)}
-                                  </span>
-                                )}
-                                {tx.gst > 0 && (
-                                  <span>
-                                    {t.gstShort}: ${tx.gst.toFixed(2)}
-                                  </span>
-                                )}
+
+                                  {linkedInv && (
+                                    <button
+                                      type="button"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setActiveTab("invoices");
+                                        setPreviewInvoiceId(linkedInv.invoiceId);
+                                      }}
+                                      className={[
+                                        "px-2.5 py-0.5 rounded-lg text-sm font-bold flex items-center gap-1 transition",
+                                        linkedInv.status === "Paid"
+                                          ? "bg-[#1E9E49]/15 text-[#1E9E49]"
+                                          : "bg-[#FF9500]/18 text-[#B25E00]",
+                                      ].join(" ")}
+                                    >
+                                      <Receipt size={14} />
+                                      <span>
+                                        {linkedInv.invoiceNumber} ·{" "}
+                                        {linkedInv.status === "Paid"
+                                          ? t.statusPaid
+                                          : t.statusUnpaid}
+                                      </span>
+                                    </button>
+                                  )}
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-base text-[#515154]">
+                                  {tx.location && (
+                                    <span className="inline-flex items-center gap-1">
+                                      <MapPin size={16} className="text-[#86868B]" />
+                                      {tx.location}
+                                    </span>
+                                  )}
+                                  {tx.agent && (
+                                    <span className="inline-flex items-center gap-1">
+                                      <User size={16} className="text-[#86868B]" />
+                                      {tx.agent}
+                                    </span>
+                                  )}
+                                  {tx.amount > 0 && (
+                                    <span>
+                                      {t.partsShort}: ${tx.amount.toFixed(2)}
+                                    </span>
+                                  )}
+                                  {tx.gst > 0 && (
+                                    <span>
+                                      {t.gstShort}: ${tx.gst.toFixed(2)}
+                                    </span>
+                                  )}
+                                </div>
                               </div>
                             </div>
 
-                            <div className="flex items-center justify-between sm:justify-end gap-4 pt-2 sm:pt-0 border-t sm:border-t-0 border-black/[0.05]">
+                            <div
+                              className="flex items-center justify-between sm:justify-end gap-3 pt-2 sm:pt-0 border-t sm:border-t-0 border-black/[0.05]"
+                              onClick={(e) => e.stopPropagation()}
+                            >
                               <span className="text-2xl sm:text-3xl font-bold tabular-nums text-[#1D1D1F]">
                                 ${tx.total.toFixed(2)}
                               </span>
 
-                              <div className="flex items-center gap-2">
-                                <button
-                                  type="button"
-                                  onClick={() => setEditingRecord(tx)}
-                                  className="h-11 px-4 rounded-xl bg-[#F5F5F7] hover:bg-[#E8E8ED] text-[#007AFF] font-semibold text-base flex items-center gap-1.5 transition"
-                                >
-                                  <Pencil size={17} />
-                                  <span>{t.editBtn}</span>
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setDeletingRecord(tx)}
-                                  className="h-11 px-4 rounded-xl bg-[#FF3B30]/10 hover:bg-[#FF3B30]/18 text-[#FF3B30] font-semibold text-base flex items-center gap-1.5 transition"
-                                >
-                                  <Trash2 size={17} />
-                                  <span>{t.deleteBtn}</span>
-                                </button>
-                              </div>
+                              {!multiSelectMode && (
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => openCreateInvoiceForRecords([tx])}
+                                    className="h-11 px-3.5 rounded-xl bg-[#007AFF]/10 hover:bg-[#007AFF]/20 text-[#007AFF] font-semibold text-base flex items-center gap-1.5 transition"
+                                  >
+                                    <Receipt size={17} />
+                                    <span>{t.createInvoiceShortBtn}</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingRecord(tx)}
+                                    className="h-11 px-3.5 rounded-xl bg-[#F5F5F7] hover:bg-[#E8E8ED] text-[#1D1D1F] font-semibold text-base flex items-center gap-1.5 transition"
+                                  >
+                                    <Pencil size={17} />
+                                    <span>{t.editBtn}</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setDeletingRecord(tx)}
+                                    className="h-11 px-3.5 rounded-xl bg-[#FF3B30]/10 hover:bg-[#FF3B30]/18 text-[#FF3B30] font-semibold text-base flex items-center gap-1.5 transition"
+                                  >
+                                    <Trash2 size={17} />
+                                    <span>{t.deleteBtn}</span>
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           </div>
                         );
@@ -1440,7 +1769,294 @@ export default function App() {
           </div>
         )}
 
-        {/* ================= TAB 3: BACKUP & SETUP ================= */}
+        {/* ================= TAB 3: INVOICES MANAGEMENT ================= */}
+        {activeTab === "invoices" && (
+          <div className="space-y-6">
+            {/* Top Bar Card */}
+            <div className="apple-card p-5 sm:p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-2xl sm:text-3xl font-bold text-[#1D1D1F]">
+                  {t.invoicesTitle}
+                </h2>
+                <p className="text-base text-[#86868B] mt-0.5">
+                  {t.invoicesSubtitle(invoicesData.summary.totalCount)}
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setShowBusinessModal(true)}
+                  className="h-12 px-4 rounded-2xl bg-[#F5F5F7] hover:bg-[#E8E8ED] text-[#1D1D1F] font-semibold text-base flex items-center gap-2 transition"
+                >
+                  <Building2 size={19} className="text-[#007AFF]" />
+                  <span>{t.businessInfoBtn}</span>
+                </button>
+
+                {invoicesData.fileExists &&
+                  (serverInfo?.isLocalMachine ? (
+                    <button
+                      type="button"
+                      onClick={() => handleOpenFolderOrExcel({ invoices: true })}
+                      className="h-12 px-4 rounded-2xl bg-[#1E9E49]/12 hover:bg-[#1E9E49]/20 text-[#1E9E49] font-semibold text-base flex items-center gap-2 transition"
+                    >
+                      <FileSpreadsheet size={19} />
+                      <span>{t.openInvoicesExcelBtn}</span>
+                    </button>
+                  ) : (
+                    <a
+                      href="/api/invoices/download"
+                      className="h-12 px-4 rounded-2xl bg-[#1E9E49]/12 hover:bg-[#1E9E49]/20 text-[#1E9E49] font-semibold text-base flex items-center gap-2 transition"
+                    >
+                      <Download size={19} />
+                      <span>{t.downloadInvoicesExcelBtn}</span>
+                    </a>
+                  ))}
+
+                <button
+                  type="button"
+                  onClick={() => openCreateInvoiceForRecords([])}
+                  className="h-12 px-5 rounded-2xl bg-[#007AFF] hover:bg-[#0066D6] text-white font-bold text-base flex items-center gap-2 shadow-md shadow-[#007AFF]/20 transition active:scale-95"
+                >
+                  <Plus size={21} />
+                  <span>{t.newInvoiceBtn}</span>
+                </button>
+              </div>
+            </div>
+
+            {/* 3 Summary Cards: Unpaid / Paid / Total */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              <div className="apple-card p-5 border-l-4 border-l-[#FF9500]">
+                <div className="flex items-center justify-between">
+                  <p className="text-base font-semibold text-[#B25E00]">{t.unpaidSummary}</p>
+                  <span className="px-2.5 py-0.5 rounded-full bg-[#FF9500]/15 text-[#B25E00] text-sm font-bold">
+                    {t.invoiceCountUnit(invoicesData.summary.unpaidCount)}
+                  </span>
+                </div>
+                <p className="text-3xl font-bold tabular-nums text-[#1D1D1F] mt-2">
+                  ${invoicesData.summary.unpaidAmount.toFixed(2)}
+                </p>
+              </div>
+
+              <div className="apple-card p-5 border-l-4 border-l-[#1E9E49]">
+                <div className="flex items-center justify-between">
+                  <p className="text-base font-semibold text-[#1E9E49]">{t.paidSummary}</p>
+                  <span className="px-2.5 py-0.5 rounded-full bg-[#1E9E49]/15 text-[#1E9E49] text-sm font-bold">
+                    {t.invoiceCountUnit(invoicesData.summary.paidCount)}
+                  </span>
+                </div>
+                <p className="text-3xl font-bold tabular-nums text-[#1D1D1F] mt-2">
+                  ${invoicesData.summary.paidAmount.toFixed(2)}
+                </p>
+              </div>
+
+              <div className="apple-card p-5">
+                <div className="flex items-center justify-between">
+                  <p className="text-base font-semibold text-[#515154]">
+                    {t.totalInvoicedSummary}
+                  </p>
+                  <span className="text-sm font-semibold text-[#86868B]">
+                    {t.invoiceCountUnit(invoicesData.summary.totalCount)}
+                  </span>
+                </div>
+                <p className="text-3xl font-bold tabular-nums text-[#1D1D1F] mt-2">
+                  ${invoicesData.summary.totalAmount.toFixed(2)}
+                </p>
+              </div>
+            </div>
+
+            {/* Filter & Search Bar */}
+            <div className="flex flex-col sm:flex-row gap-3">
+              <div className="relative flex-1">
+                <Search
+                  size={20}
+                  className="absolute left-4 top-1/2 -translate-y-1/2 text-[#86868B]"
+                />
+                <input
+                  type="text"
+                  value={invoiceSearch}
+                  onChange={(e) => setInvoiceSearch(e.target.value)}
+                  placeholder={t.invoiceSearchPlaceholder}
+                  className="w-full h-13 pl-11 pr-10 rounded-2xl bg-white border border-black/[0.08] focus:border-[#007AFF] text-lg outline-none"
+                />
+                {invoiceSearch && (
+                  <button
+                    type="button"
+                    onClick={() => setInvoiceSearch("")}
+                    className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-[#86868B]"
+                  >
+                    <X size={18} />
+                  </button>
+                )}
+              </div>
+
+              <div className="flex bg-[#E8E8ED] p-1 rounded-2xl shrink-0">
+                {(
+                  [
+                    { id: "all", label: t.filterAll },
+                    { id: "unpaid", label: t.filterUnpaid },
+                    { id: "paid", label: t.filterPaid },
+                  ] as const
+                ).map((f) => (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => setInvoiceStatusFilter(f.id)}
+                    className={[
+                      "flex-1 sm:flex-initial px-5 h-11 rounded-xl text-base font-semibold transition",
+                      invoiceStatusFilter === f.id
+                        ? "bg-white text-[#1D1D1F] shadow-sm"
+                        : "text-[#515154]",
+                    ].join(" ")}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Invoice Cards List */}
+            {filteredInvoices.length === 0 ? (
+              <div className="apple-card py-16 px-6 text-center space-y-4">
+                <Receipt size={48} className="mx-auto text-[#C7C7CC]" />
+                <p className="text-xl font-semibold text-[#86868B] max-w-lg mx-auto leading-relaxed">
+                  {invoicesData.invoices.length === 0 ? t.noInvoicesYet : t.noInvoicesMatch}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {filteredInvoices.map((inv) => {
+                  const isPaid = inv.status === "Paid";
+                  const isOverdue = !isPaid && inv.dueDate < todayStr;
+                  const itemsPreview = inv.items
+                    .map((it) => localizeDescription(it.description, config.descriptions, lang))
+                    .filter(Boolean)
+                    .join(lang === "zh" ? "；" : "; ");
+
+                  return (
+                    <div
+                      key={inv.id}
+                      className="apple-card p-5 sm:p-6 flex flex-col lg:flex-row lg:items-center justify-between gap-5 hover:shadow-md transition"
+                    >
+                      <div className="space-y-2 min-w-0 flex-1">
+                        <div className="flex items-center gap-2.5 flex-wrap">
+                          <span className="text-xl font-extrabold text-[#007AFF]">
+                            {inv.invoiceNumber}
+                          </span>
+
+                          <span
+                            className={[
+                              "px-3 py-1 rounded-full text-sm font-bold inline-flex items-center gap-1.5",
+                              isPaid
+                                ? "bg-[#1E9E49]/15 text-[#1E9E49]"
+                                : "bg-[#FF9500]/18 text-[#B25E00]",
+                            ].join(" ")}
+                          >
+                            {isPaid ? <CheckCircle2 size={15} /> : <Clock size={15} />}
+                            <span>{isPaid ? t.statusPaid : t.statusUnpaid}</span>
+                          </span>
+
+                          {isOverdue && (
+                            <span className="px-2.5 py-0.5 rounded-full bg-[#FF3B30]/12 text-[#FF3B30] text-xs font-bold">
+                              {t.overdueBadge}
+                            </span>
+                          )}
+
+                          {inv.clientName && (
+                            <span className="text-xl font-bold text-[#1D1D1F]">
+                              · {inv.clientName}
+                            </span>
+                          )}
+                        </div>
+
+                        <p className="text-lg font-medium text-[#1D1D1F] break-words">
+                          {itemsPreview}
+                        </p>
+
+                        <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm sm:text-base text-[#515154] tabular-nums">
+                          <span>
+                            {t.issueDateLabel}: <strong>{inv.issueDate}</strong>
+                          </span>
+                          <span>
+                            {t.dueDateLabel}:{" "}
+                            <strong className={isOverdue ? "text-[#FF3B30]" : ""}>
+                              {inv.dueDate}
+                            </strong>
+                          </span>
+                          {isPaid && inv.paidDate && (
+                            <span className="text-[#1E9E49] font-semibold">
+                              {t.paidOnLabel(inv.paidDate)} (
+                              {localizePayment(inv.paymentMethod, lang)})
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between lg:justify-end gap-4 pt-3 lg:pt-0 border-t lg:border-t-0 border-black/[0.06]">
+                        <div className="sm:text-right">
+                          <p className="text-3xl font-extrabold tabular-nums text-[#1D1D1F]">
+                            ${inv.total.toFixed(2)}
+                          </p>
+                          {inv.gstTotal > 0 && (
+                            <p className="text-xs font-semibold text-[#86868B] tabular-nums">
+                              {t.gstShort}: ${inv.gstTotal.toFixed(2)}
+                            </p>
+                          )}
+                        </div>
+
+                        {/* 4 Unmistakable Senior-Friendly Action Buttons */}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleToggleInvoiceStatus(inv)}
+                            className={[
+                              "h-12 px-4 rounded-xl font-bold text-base flex items-center gap-1.5 transition active:scale-95",
+                              isPaid
+                                ? "bg-[#F5F5F7] hover:bg-[#E8E8ED] text-[#515154]"
+                                : "bg-[#1E9E49] hover:bg-[#17853B] text-white shadow-sm",
+                            ].join(" ")}
+                          >
+                            <Check size={18} />
+                            <span>{isPaid ? t.markUnpaidBtn : t.markPaidBtn}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setPreviewInvoiceId(inv.id)}
+                            className="h-12 px-4 rounded-xl bg-[#007AFF]/12 hover:bg-[#007AFF]/20 text-[#007AFF] font-bold text-base flex items-center gap-1.5 transition"
+                          >
+                            <Eye size={18} />
+                            <span>{t.viewPrintBtn}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setInvoiceEditorDraft(buildDraftFromInvoice(inv))}
+                            className="h-12 px-3.5 rounded-xl bg-[#F5F5F7] hover:bg-[#E8E8ED] text-[#1D1D1F] font-semibold text-base flex items-center gap-1.5 transition"
+                          >
+                            <Pencil size={17} />
+                            <span>{t.editBtn}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => setDeletingInvoice(inv)}
+                            className="h-12 px-3.5 rounded-xl bg-[#FF3B30]/10 hover:bg-[#FF3B30]/18 text-[#FF3B30] font-semibold text-base flex items-center gap-1.5 transition"
+                          >
+                            <Trash2 size={17} />
+                            <span>{t.deleteBtn}</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ================= TAB 4: BACKUP & SETUP ================= */}
         {activeTab === "backup" && (
           <div className="space-y-6">
             {/* 1. DAILY BACKUP & ONE-TAP RESTORE */}
@@ -1519,7 +2135,11 @@ export default function App() {
                               </span>
                             </div>
                             <p className="text-base text-[#515154] tabular-nums">
-                              {t.backupSummary(bkp.recordCount, bkp.totalAmount.toFixed(2))}
+                              {t.backupSummary(
+                                bkp.recordCount,
+                                bkp.invoiceCount ?? 0,
+                                bkp.totalAmount.toFixed(2)
+                              )}
                             </p>
                           </div>
 
@@ -1584,7 +2204,7 @@ export default function App() {
               </section>
             )}
 
-            {/* 3. MANAGE SAVED LISTS (ITEMS, LOCATIONS, PEOPLE) */}
+            {/* 3. MANAGE SAVED LISTS */}
             <section className="apple-card p-6 sm:p-7 space-y-5">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="flex items-center gap-2.5">
@@ -1592,14 +2212,24 @@ export default function App() {
                   <h3 className="text-2xl font-bold text-[#1D1D1F]">{t.manageListsTitle}</h3>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => setAddModal(manageSection)}
-                  className="h-12 px-5 rounded-2xl bg-[#007AFF] hover:bg-[#0066D6] text-white font-semibold text-base flex items-center justify-center gap-2 transition"
-                >
-                  <Plus size={20} />
-                  <span>{t.addBtn}</span>
-                </button>
+                <div className="flex gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setShowBusinessModal(true)}
+                    className="h-12 px-4 rounded-2xl bg-[#F5F5F7] hover:bg-[#E8E8ED] text-[#1D1D1F] font-semibold text-base flex items-center gap-2 transition"
+                  >
+                    <Building2 size={19} className="text-[#007AFF]" />
+                    <span>{t.businessInfoBtn}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAddModal(manageSection)}
+                    className="h-12 px-5 rounded-2xl bg-[#007AFF] hover:bg-[#0066D6] text-white font-semibold text-base flex items-center justify-center gap-2 transition"
+                  >
+                    <Plus size={20} />
+                    <span>{t.addBtn}</span>
+                  </button>
+                </div>
               </div>
 
               <div className="flex bg-[#E8E8ED] p-1 rounded-2xl">
@@ -1711,7 +2341,10 @@ export default function App() {
                 </div>
 
                 {editingFolderManually ? (
-                  <form onSubmit={handleSaveManualFolder} className="flex flex-col sm:flex-row gap-3">
+                  <form
+                    onSubmit={handleSaveManualFolder}
+                    className="flex flex-col sm:flex-row gap-3"
+                  >
                     <input
                       type="text"
                       value={manualPathInput}
@@ -1766,14 +2399,20 @@ export default function App() {
         )}
       </main>
 
-      {/* Mobile Bottom iOS Tab Bar */}
+      {/* Mobile Bottom iOS Tab Bar (4 Tabs) */}
       <nav className="md:hidden fixed bottom-0 inset-x-0 z-30 apple-glass border-t border-black/[0.08] safe-bottom">
-        <div className="grid grid-cols-3 h-19 px-2">
+        <div className="grid grid-cols-4 h-19 px-1">
           {(
             [
-              { id: "entry", label: t.tabEntry, icon: PlusCircle },
-              { id: "records", label: t.tabRecords, icon: BookOpen },
-              { id: "backup", label: t.tabBackup, icon: ShieldCheck },
+              { id: "entry", label: t.tabEntry, icon: PlusCircle, badge: 0 },
+              { id: "records", label: t.tabRecords, icon: BookOpen, badge: 0 },
+              {
+                id: "invoices",
+                label: t.tabInvoices,
+                icon: Receipt,
+                badge: invoicesData.summary.unpaidCount,
+              },
+              { id: "backup", label: t.tabBackup, icon: ShieldCheck, badge: 0 },
             ] as const
           ).map((tab) => {
             const Icon = tab.icon;
@@ -1784,12 +2423,19 @@ export default function App() {
                 type="button"
                 onClick={() => setActiveTab(tab.id)}
                 className={[
-                  "flex flex-col items-center justify-center gap-1 transition",
+                  "relative flex flex-col items-center justify-center gap-1 transition",
                   active ? "text-[#007AFF]" : "text-[#86868B]",
                 ].join(" ")}
               >
-                <Icon size={26} strokeWidth={active ? 2.5 : 2} />
-                <span className="text-sm font-semibold">{tab.label}</span>
+                <div className="relative">
+                  <Icon size={25} strokeWidth={active ? 2.5 : 2} />
+                  {tab.badge > 0 && (
+                    <span className="absolute -top-1.5 -right-3 px-1.5 min-w-[18px] h-[18px] rounded-full bg-[#FF9500] text-white text-[11px] font-bold flex items-center justify-center tabular-nums">
+                      {tab.badge}
+                    </span>
+                  )}
+                </div>
+                <span className="text-xs font-semibold truncate max-w-full px-1">{tab.label}</span>
               </button>
             );
           })}
@@ -1812,7 +2458,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Modals */}
+      {/* Existing Modals */}
       <CalendarModal
         open={showCalendar}
         selectedDate={entryDate}
@@ -1861,6 +2507,36 @@ export default function App() {
         onClose={() => setEditingRecord(null)}
       />
 
+      {/* Invoice Modals */}
+      <InvoiceEditorModal
+        open={invoiceEditorDraft !== null}
+        initialDraft={invoiceEditorDraft}
+        config={config}
+        availableRecords={monthData.transactions}
+        lang={lang}
+        onSave={handleSaveInvoice}
+        onClose={() => setInvoiceEditorDraft(null)}
+      />
+
+      <InvoicePreviewModal
+        invoice={previewInvoice}
+        business={config.businessProfile}
+        lang={lang}
+        onToggleStatus={handleToggleInvoiceStatus}
+        onEdit={(inv) => setInvoiceEditorDraft(buildDraftFromInvoice(inv))}
+        onOpenBusinessSettings={() => setShowBusinessModal(true)}
+        onClose={() => setPreviewInvoiceId(null)}
+      />
+
+      <BusinessProfileModal
+        open={showBusinessModal}
+        profile={config.businessProfile}
+        lang={lang}
+        onSave={handleSaveBusinessProfile}
+        onClose={() => setShowBusinessModal(false)}
+      />
+
+      {/* Confirm Delete Record */}
       <ConfirmModal
         open={deletingRecord !== null}
         tone="danger"
@@ -1880,6 +2556,28 @@ export default function App() {
         onClose={() => setDeletingRecord(null)}
       />
 
+      {/* Confirm Delete Invoice */}
+      <ConfirmModal
+        open={deletingInvoice !== null}
+        tone="danger"
+        title={t.deleteInvoiceConfirmTitle}
+        body={
+          deletingInvoice
+            ? t.deleteInvoiceConfirmBody(
+                deletingInvoice.invoiceNumber,
+                deletingInvoice.clientName,
+                deletingInvoice.total.toFixed(2)
+              )
+            : ""
+        }
+        confirmLabel={t.confirmDeleteBtn}
+        cancelLabel={t.cancelBtn}
+        busy={actionBusy}
+        onConfirm={handleConfirmDeleteInvoice}
+        onClose={() => setDeletingInvoice(null)}
+      />
+
+      {/* Confirm Restore Backup */}
       <ConfirmModal
         open={restoringBackup !== null}
         tone="restore"

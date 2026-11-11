@@ -137,6 +137,30 @@ async function createWindow() {
         }
         return result.filePaths[0];
       },
+      onRenderPdf: async (htmlContent) => {
+        const pdfWin = new BrowserWindow({
+          show: false,
+          width: 820,
+          height: 1160,
+          webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+          },
+        });
+        try {
+          await pdfWin.loadURL(
+            `data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`
+          );
+          const pdfData = await pdfWin.webContents.printToPDF({
+            printBackground: true,
+            pageSize: "A4",
+            margins: { top: 0.35, bottom: 0.35, left: 0.35, right: 0.35 },
+          });
+          return Buffer.from(pdfData);
+        } finally {
+          pdfWin.destroy();
+        }
+      },
     });
     targetUrl = `http://127.0.0.1:${serverHandle.port}`;
   }

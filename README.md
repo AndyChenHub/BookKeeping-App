@@ -28,6 +28,9 @@ Both your computer and phone connect to the **same server** running inside `Book
 - **Senior-Friendly Apple Design:** Clean cards, high-contrast typography, large touch targets, and an uncluttered 3-step entry flow.
 - **1-Tap Language Switch (`中文 | EN`):** Switch the screen between Chinese and English anytime. Regardless of screen language, Excel spreadsheets are always saved cleanly in English.
 - **View, Edit & Delete Records:** Browse monthly totals, filter by Cash or Card, search entries, and fix or delete any past record directly in the app (automatically updating the `.xlsx` file).
+- **Invoices & PDF Generation:**
+  - Create a professional Tax Invoice from any single record (1 tap) or combine multiple records onto one invoice.
+  - Dedicated **Invoices (`发票`)** page to track **Paid / Unpaid** totals, toggle Paid/Unpaid status in one click, modify line items, delete invoices, configure Business & Bank details, and export/print clean A4 **PDF** invoices on both PC and Phone.
 - **Automatic Daily Backups & Easy Restore:**
   - Automatically backs up `config.xlsx` and all monthly Excel books every day into `data/backups/`.
   - Create a manual backup anytime with **Back Up Now**.
@@ -38,8 +41,9 @@ Both your computer and phone connect to the **same server** running inside `Book
 ## 📂 Data & Excel Files
 
 By default, data is stored in the `data/` folder (or `BookKeepingData/` when moving the portable `.exe` elsewhere):
-- `config.xlsx` — Saved Items (Mandarin ↔ English), Locations, People/Agents, and settings.
+- `config.xlsx` — Saved Items (Mandarin ↔ English), Locations, People/Agents, Business Invoice Profile, and settings.
 - `YYYY/YYYYMMBook.xlsx` — Monthly transaction ledgers (e.g., `2026/202611Book.xlsx`).
+- `Invoices.xlsx` — All created invoices, Paid/Unpaid status, and line items.
 - `backups/` — Timestamped daily, manual, and pre-restore snapshots.
 
 *Tip: Close any open `.xlsx` file in Microsoft Excel before saving or restoring inside the app so Windows does not lock the file.*

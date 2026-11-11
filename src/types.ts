@@ -1,6 +1,18 @@
 export type Language = "zh" | "en";
 
-export type ActiveTab = "entry" | "records" | "backup";
+export type ActiveTab = "entry" | "records" | "invoices" | "backup";
+
+export interface BusinessProfile {
+  businessName: string;
+  businessAbn: string;
+  businessPhone: string;
+  businessEmail: string;
+  businessAddress: string;
+  bankAccountName: string;
+  bankBsb: string;
+  bankAccountNumber: string;
+  invoicePrefix: string;
+}
 
 export interface ConfigData {
   locations: string[];
@@ -8,6 +20,7 @@ export interface ConfigData {
   descriptions: Record<string, string>;
   customBooksPath: string;
   booksPath: string;
+  businessProfile: BusinessProfile;
 }
 
 export interface Transaction {
@@ -40,6 +53,60 @@ export interface TransactionsResponse {
   summary: MonthSummary;
 }
 
+export interface InvoiceLineItem {
+  id: string;
+  recordId?: string;
+  date: string;
+  description: string;
+  parts: number;
+  gst: number;
+  total: number;
+}
+
+export type InvoiceStatus = "Unpaid" | "Paid";
+
+export interface InvoiceRecord {
+  id: string;
+  invoiceNumber: string;
+  status: InvoiceStatus;
+  issueDate: string;
+  dueDate: string;
+  clientName: string;
+  clientDetails: string;
+  items: InvoiceLineItem[];
+  linkedRecordIds: string[];
+  partsTotal: number;
+  gstTotal: number;
+  total: number;
+  paidDate: string;
+  paymentMethod: string;
+  notes: string;
+  createdAt: string;
+}
+
+export interface InvoiceSummary {
+  totalCount: number;
+  unpaidCount: number;
+  paidCount: number;
+  unpaidAmount: number;
+  paidAmount: number;
+  totalAmount: number;
+}
+
+export interface RecordInvoiceLink {
+  invoiceId: string;
+  invoiceNumber: string;
+  status: InvoiceStatus;
+}
+
+export interface InvoicesResponse {
+  invoices: InvoiceRecord[];
+  summary: InvoiceSummary;
+  nextInvoiceNumber: string;
+  fileExists: boolean;
+  recordInvoiceMap: Record<string, RecordInvoiceLink>;
+}
+
 export interface BackupManifest {
   id: string;
   createdAt: string;
@@ -47,6 +114,7 @@ export interface BackupManifest {
   reason: "daily" | "manual" | "safety";
   bookCount: number;
   recordCount: number;
+  invoiceCount?: number;
   totalAmount: number;
 }
 
@@ -68,6 +136,7 @@ export interface ServerInfo {
   hostname: string;
   isLocalMachine: boolean;
   canPickFolder: boolean;
+  canRenderPdf: boolean;
   remoteClients: number;
   primaryUrl: string;
   primaryQrDataUrl: string;
