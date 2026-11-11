@@ -15,6 +15,7 @@ import type {
   InvoiceStatus,
   RecordInvoiceLink,
 } from "./src/types";
+import { buildInvoicePdfFileName } from "./src/invoice-utils";
 import { renderInvoiceHtml } from "./invoice-template";
 
 export interface StartServerOptions {
@@ -431,15 +432,21 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
       }
     }
 
+    const rawGstReg = settingsMap.get("gstRegistered");
+    const gstRegistered =
+      rawGstReg === "true" ? true : rawGstReg === "false" ? false : undefined;
+
     const businessProfile: BusinessProfile = {
       businessName: settingsMap.get("businessName") || "",
       businessAbn: settingsMap.get("businessAbn") || "",
+      gstRegistered,
       businessPhone: settingsMap.get("businessPhone") || "",
       businessEmail: settingsMap.get("businessEmail") || "",
       businessAddress: settingsMap.get("businessAddress") || "",
       bankAccountName: settingsMap.get("bankAccountName") || "",
       bankBsb: settingsMap.get("bankBsb") || "",
       bankAccountNumber: settingsMap.get("bankAccountNumber") || "",
+      payId: settingsMap.get("payId") || "",
       invoicePrefix: settingsMap.get("invoicePrefix") || "INV-",
     };
 
@@ -521,7 +528,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
       { header: "Issue Date", key: "issueDate", width: 14 },
       { header: "Due Date", key: "dueDate", width: 14 },
       { header: "Bill To", key: "clientName", width: 26 },
-      { header: "Contact / Address", key: "clientDetails", width: 28 },
+      { header: "Service Address / Contact", key: "clientDetails", width: 32 },
       { header: "Items Summary", key: "summary", width: 38 },
       { header: "Parts Total", key: "partsTotal", width: 15 },
       { header: "GST Total", key: "gstTotal", width: 14 },
@@ -587,6 +594,9 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
       let items: InvoiceLineItem[] = [];
       let linkedRecordIds: string[] = [];
       let createdAt = new Date().toISOString();
+      let serviceAddress = "";
+      let clientAbn = "";
+      let resolvedClientDetails = clientDetails;
 
       if (payloadRaw) {
         try {
@@ -594,6 +604,11 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
           if (Array.isArray(parsed.items)) items = parsed.items;
           if (Array.isArray(parsed.linkedRecordIds)) linkedRecordIds = parsed.linkedRecordIds;
           if (typeof parsed.createdAt === "string") createdAt = parsed.createdAt;
+          if (typeof parsed.serviceAddress === "string") serviceAddress = parsed.serviceAddress;
+          if (typeof parsed.clientAbn === "string") clientAbn = parsed.clientAbn;
+          if (typeof parsed.clientDetails === "string") {
+            resolvedClientDetails = parsed.clientDetails;
+          }
         } catch {
           // fallback below
         }
@@ -605,6 +620,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
             id: generateId("item"),
             date: issueDate,
             description: summaryDesc || "Service",
+            quantity: 1,
             parts: partsTotal,
             gst: gstTotal,
             total,
@@ -619,7 +635,9 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
         issueDate,
         dueDate,
         clientName,
-        clientDetails,
+        clientAbn,
+        serviceAddress,
+        clientDetails: resolvedClientDetails,
         items,
         linkedRecordIds,
         partsTotal,
@@ -652,7 +670,14 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
 
     for (const inv of invoices) {
       const summary = inv.items.map((it) => it.description).filter(Boolean).join("; ");
+      const visibleAddressAndContact = [inv.serviceAddress, inv.clientDetails]
+        .map((s) => (s || "").trim())
+        .filter(Boolean)
+        .join(" | ");
       const payload = JSON.stringify({
+        serviceAddress: inv.serviceAddress || "",
+        clientAbn: inv.clientAbn || "",
+        clientDetails: inv.clientDetails || "",
         items: inv.items,
         linkedRecordIds: inv.linkedRecordIds,
         createdAt: inv.createdAt,
@@ -664,7 +689,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
         issueDate: inv.issueDate,
         dueDate: inv.dueDate,
         clientName: inv.clientName,
-        clientDetails: inv.clientDetails,
+        clientDetails: visibleAddressAndContact,
         summary,
         partsTotal: roundMoney(inv.partsTotal),
         gstTotal: roundMoney(inv.gstTotal),
@@ -713,6 +738,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
           ? it.date
           : format(new Date(), "yyyy-MM-dd"),
         description: String(it.description || "").trim(),
+        quantity: Math.max(1, Number(it.quantity) || 1),
         parts: roundMoney(Number(it.parts) || 0),
         gst: roundMoney(Number(it.gst) || 0),
         total: roundMoney(Number(it.total) || 0),
@@ -756,6 +782,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
       issueDate,
       dueDate,
       clientName: String(body.clientName || "").trim(),
+      clientAbn: String(body.clientAbn || "").trim(),
+      serviceAddress: String(body.serviceAddress || "").trim(),
       clientDetails: String(body.clientDetails || "").trim(),
       items,
       linkedRecordIds: Array.from(linkedSet),
@@ -1078,7 +1106,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
         hostname: os.hostname(),
         isLocalMachine: isLocalRequest(req),
         canPickFolder: Boolean(options.onPickFolder) && isLocalRequest(req),
-        canRenderPdf: Boolean(options.onRenderPdf),
+        canRenderPdf: Boolean(options.onRenderPdf || findSystemBrowserForPdf()),
         remoteClients,
         primaryUrl: primary.url,
         primaryQrDataUrl: primary.qrDataUrl,
@@ -1114,12 +1142,19 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
         await writeSettingsKeysInternal({
           businessName: String(profile.businessName || "").trim(),
           businessAbn: String(profile.businessAbn || "").trim(),
+          gstRegistered:
+            profile.gstRegistered === false
+              ? "false"
+              : profile.gstRegistered === true
+                ? "true"
+                : "",
           businessPhone: String(profile.businessPhone || "").trim(),
           businessEmail: String(profile.businessEmail || "").trim(),
           businessAddress: String(profile.businessAddress || "").trim(),
           bankAccountName: String(profile.bankAccountName || "").trim(),
           bankBsb: String(profile.bankBsb || "").trim(),
           bankAccountNumber: String(profile.bankAccountNumber || "").trim(),
+          payId: String(profile.payId || "").trim(),
           invoicePrefix: String(profile.invoicePrefix || "INV-").trim() || "INV-",
         });
         hasChangesSinceLastBackup = true;
@@ -1830,14 +1865,76 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
     }
   });
 
+  function findSystemBrowserForPdf(): string | null {
+    const candidates: string[] = [];
+    if (process.platform === "win32") {
+      const pf86 = process.env["ProgramFiles(x86)"] || "C:\\Program Files (x86)";
+      const pf = process.env["ProgramFiles"] || "C:\\Program Files";
+      const localApp = process.env["LOCALAPPDATA"] || "";
+      candidates.push(
+        path.join(pf86, "Microsoft", "Edge", "Application", "msedge.exe"),
+        path.join(pf, "Microsoft", "Edge", "Application", "msedge.exe"),
+        path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
+        path.join(pf86, "Google", "Chrome", "Application", "chrome.exe")
+      );
+      if (localApp) {
+        candidates.push(path.join(localApp, "Google", "Chrome", "Application", "chrome.exe"));
+      }
+    } else if (process.platform === "darwin") {
+      candidates.push(
+        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"
+      );
+    } else {
+      candidates.push("/usr/bin/google-chrome", "/usr/bin/chromium-browser", "/usr/bin/chromium");
+    }
+
+    for (const exe of candidates) {
+      if (exe && fs.existsSync(exe)) return exe;
+    }
+    return null;
+  }
+
+  async function renderPdfWithSystemBrowser(htmlContent: string): Promise<Buffer | null> {
+    const browserExe = findSystemBrowserForPdf();
+    if (!browserExe) return null;
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "bk-pdf-"));
+    const htmlPath = path.join(tmpDir, "invoice.html");
+    const pdfPath = path.join(tmpDir, "invoice.pdf");
+    try {
+      fs.writeFileSync(htmlPath, htmlContent, "utf8");
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn(
+          browserExe,
+          [
+            "--headless",
+            "--disable-gpu",
+            "--no-pdf-header-footer",
+            `--print-to-pdf=${pdfPath}`,
+            htmlPath,
+          ],
+          { stdio: "ignore", windowsHide: true }
+        );
+        child.on("error", reject);
+        child.on("close", (code) => {
+          if (code === 0 && fs.existsSync(pdfPath)) resolve();
+          else reject(new Error(`Browser PDF exit code ${code}`));
+        });
+      });
+      return fs.readFileSync(pdfPath);
+    } finally {
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      } catch {
+        // ignore cleanup error
+      }
+    }
+  }
+
   app.get("/api/invoices/:id/pdf", async (req, res) => {
     try {
       const targetId = req.params.id;
-      if (!options.onRenderPdf) {
-        res.redirect(`/api/invoices/${encodeURIComponent(targetId)}/print?autoprint=1`);
-        return;
-      }
-
       const { invoice, business } = await mutex.runExclusive(async () => {
         const cfg = await readConfigInternal();
         const existing = await readInvoicesInternal(cfg.booksPath);
@@ -1847,11 +1944,28 @@ export async function startServer(options: StartServerOptions = {}): Promise<Ser
       });
 
       const html = renderInvoiceHtml(invoice, business, { forPdf: true });
-      const pdfBuffer = await options.onRenderPdf(html);
-      const safeFileName = `${invoice.invoiceNumber.replace(/[^a-zA-Z0-9_-]/g, "_") || "Invoice"}.pdf`;
+      let pdfBuffer: Buffer | null = null;
+      if (options.onRenderPdf) {
+        pdfBuffer = await options.onRenderPdf(html);
+      } else {
+        pdfBuffer = await renderPdfWithSystemBrowser(html);
+      }
+
+      if (!pdfBuffer) {
+        res.redirect(`/api/invoices/${encodeURIComponent(targetId)}/print?autoprint=1`);
+        return;
+      }
+
+      const fullFileName = buildInvoicePdfFileName(invoice);
+      const asciiFallback =
+        fullFileName.replace(/[^\x20-\x7E]/g, "_").replace(/["\\]/g, "_") || "Invoice.pdf";
+      const encodedUtf8 = encodeURIComponent(fullFileName);
 
       res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Disposition", `attachment; filename="${safeFileName}"`);
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodedUtf8}`
+      );
       res.send(pdfBuffer);
     } catch (error) {
       res.status(500).json({ error: (error as Error).message });

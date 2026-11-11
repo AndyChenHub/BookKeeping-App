@@ -12,6 +12,8 @@ import {
   CheckCircle2,
   Clock,
   FileText,
+  MapPin,
+  AlertCircle,
 } from "lucide-react";
 import { format, addDays, parseISO, isValid } from "date-fns";
 import type {
@@ -24,6 +26,13 @@ import type {
   Transaction,
 } from "../types";
 import { translations, localizeDescription } from "../i18n";
+import {
+  buildInvoicePdfFileName,
+  formatAuAbn,
+  formatAuBsb,
+  formatAuDate,
+  isAustralianTaxInvoice,
+} from "../invoice-utils";
 
 function makeLocalId() {
   return `li_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -36,6 +45,8 @@ export interface InvoiceDraft {
   issueDate: string;
   dueDate: string;
   clientName: string;
+  clientAbn: string;
+  serviceAddress: string;
   clientDetails: string;
   items: InvoiceLineItem[];
   paidDate: string;
@@ -49,10 +60,14 @@ export function buildDraftFromRecords(
 ): InvoiceDraft {
   const today = format(new Date(), "yyyy-MM-dd");
   const due14 = format(addDays(new Date(), 14), "yyyy-MM-dd");
-  const firstClient =
-    records.find((r) => r.location?.trim())?.location ||
-    records.find((r) => r.agent?.trim())?.agent ||
-    "";
+
+  const uniqueLocations = Array.from(
+    new Set(records.map((r) => (r.location || "").trim()).filter(Boolean))
+  );
+  const serviceAddress = uniqueLocations.join("; ");
+
+  const firstAgent = records.find((r) => r.agent?.trim())?.agent?.trim() || "";
+  const firstClient = firstAgent || uniqueLocations[0] || "";
 
   const items: InvoiceLineItem[] =
     records.length > 0
@@ -61,6 +76,7 @@ export function buildDraftFromRecords(
           recordId: r.id,
           date: r.date || today,
           description: r.description || "Service",
+          quantity: 1,
           parts: r.amount || 0,
           gst: r.gst || 0,
           total: r.total || 0,
@@ -70,6 +86,7 @@ export function buildDraftFromRecords(
             id: makeLocalId(),
             date: today,
             description: "",
+            quantity: 1,
             parts: 0,
             gst: 0,
             total: 0,
@@ -82,6 +99,8 @@ export function buildDraftFromRecords(
     issueDate: today,
     dueDate: due14,
     clientName: firstClient,
+    clientAbn: "",
+    serviceAddress,
     clientDetails: "",
     items,
     paidDate: "",
@@ -98,8 +117,10 @@ export function buildDraftFromInvoice(inv: InvoiceRecord): InvoiceDraft {
     issueDate: inv.issueDate,
     dueDate: inv.dueDate,
     clientName: inv.clientName,
+    clientAbn: inv.clientAbn || "",
+    serviceAddress: inv.serviceAddress || "",
     clientDetails: inv.clientDetails,
-    items: inv.items.map((it) => ({ ...it })),
+    items: inv.items.map((it) => ({ ...it, quantity: Math.max(1, Number(it.quantity) || 1) })),
     paidDate: inv.paidDate || format(new Date(), "yyyy-MM-dd"),
     paymentMethod: inv.paymentMethod || "Bank Transfer",
     notes: inv.notes || "",
@@ -134,7 +155,10 @@ export function InvoiceEditorModal({
     if (open && initialDraft) {
       setDraft({
         ...initialDraft,
-        items: initialDraft.items.map((i) => ({ ...i })),
+        items: initialDraft.items.map((i) => ({
+          ...i,
+          quantity: Math.max(1, Number(i.quantity) || 1),
+        })),
       });
       setShowRecordPicker(false);
     }
@@ -142,10 +166,14 @@ export function InvoiceEditorModal({
 
   const quickClients = useMemo(() => {
     const set = new Set<string>();
-    for (const loc of config.locations) if (loc.trim()) set.add(loc.trim());
     for (const ag of config.agents) if (ag.trim()) set.add(ag.trim());
+    for (const loc of config.locations) if (loc.trim()) set.add(loc.trim());
     return Array.from(set).slice(0, 8);
   }, [config.locations, config.agents]);
+
+  const quickAddresses = useMemo(() => {
+    return Array.from(new Set(config.locations.map((l) => l.trim()).filter(Boolean))).slice(0, 8);
+  }, [config.locations]);
 
   if (!open || !draft) return null;
 
@@ -160,6 +188,11 @@ export function InvoiceEditorModal({
     { parts: 0, gst: 0, total: 0 }
   );
   const subtotalExGst = Math.max(0, totals.total - totals.gst);
+  const isTaxInv = isAustralianTaxInvoice({ gstTotal: totals.gst }, config.businessProfile);
+  const showAtoThousandWarning =
+    isTaxInv && totals.total >= 1000 && !draft.clientName.trim() && !draft.clientAbn.trim();
+
+  const pdfFileNamePreview = buildInvoicePdfFileName(draft);
 
   const setDuePreset = (days: number) => {
     const base = parseISO(draft.issueDate);
@@ -192,6 +225,7 @@ export function InvoiceEditorModal({
                   id: makeLocalId(),
                   date: prev.issueDate,
                   description: "",
+                  quantity: 1,
                   parts: 0,
                   gst: 0,
                   total: 0,
@@ -212,6 +246,7 @@ export function InvoiceEditorModal({
             id: makeLocalId(),
             date: prev.issueDate,
             description: "",
+            quantity: 1,
             parts: 0,
             gst: 0,
             total: 0,
@@ -231,9 +266,15 @@ export function InvoiceEditorModal({
         (i) => i.description.trim() || i.total > 0 || i.parts > 0
       );
 
+      const nextAddress =
+        prev.serviceAddress || (rec.location ? rec.location.trim() : "");
+      const nextClient =
+        prev.clientName || (rec.agent ? rec.agent.trim() : rec.location?.trim() || "");
+
       return {
         ...prev,
-        clientName: prev.clientName || rec.location || rec.agent || "",
+        clientName: nextClient,
+        serviceAddress: nextAddress,
         items: [
           ...cleanedExisting,
           {
@@ -241,6 +282,7 @@ export function InvoiceEditorModal({
             recordId: rec.id,
             date: rec.date,
             description: rec.description,
+            quantity: 1,
             parts: rec.amount || 0,
             gst: rec.gst || 0,
             total: rec.total || 0,
@@ -278,9 +320,14 @@ export function InvoiceEditorModal({
       >
         {/* Modal Header */}
         <div className="flex items-center justify-between px-6 py-5 border-b border-black/[0.06]">
-          <h3 className="text-2xl font-bold text-[#1D1D1F]">
-            {isEditing ? t.editInvoiceTitle : t.createInvoiceTitle}
-          </h3>
+          <div>
+            <h3 className="text-2xl font-bold text-[#1D1D1F]">
+              {isEditing ? t.editInvoiceTitle : t.createInvoiceTitle}
+            </h3>
+            <p className="text-xs font-semibold text-[#86868B] mt-0.5">
+              {isTaxInv ? "ATO TAX INVOICE (AUD)" : "AUSTRALIAN INVOICE (AUD)"}
+            </p>
+          </div>
           <button
             type="button"
             onClick={onClose}
@@ -393,8 +440,50 @@ export function InvoiceEditorModal({
             </div>
           )}
 
-          {/* Row 2: Client / Bill To */}
-          <div className="space-y-3">
+          {/* Row 2: Job / Service Address & Client / Bill To */}
+          <div className="p-4 sm:p-5 rounded-2xl bg-[#FAFAFC] border border-black/[0.06] space-y-4">
+            {/* Dedicated Service Address (prominent because it drives Australian job location + PDF export filename) */}
+            <div>
+              <label className="flex items-center gap-1.5 text-base font-bold text-[#1D1D1F] mb-2">
+                <MapPin size={18} className="text-[#007AFF]" />
+                <span>{t.serviceAddressLabel}</span>
+              </label>
+              <input
+                type="text"
+                value={draft.serviceAddress}
+                onChange={(e) => setDraft({ ...draft, serviceAddress: e.target.value })}
+                placeholder={t.serviceAddressPlaceholder}
+                className="w-full h-14 px-4 rounded-2xl bg-white border-2 border-black/10 focus:border-[#007AFF] text-xl font-semibold outline-none transition"
+              />
+              {quickAddresses.length > 0 && (
+                <div className="flex flex-wrap items-center gap-2 mt-2.5">
+                  <span className="text-sm text-[#86868B]">{t.quickPickAddress}</span>
+                  {quickAddresses.map((addr) => (
+                    <button
+                      key={addr}
+                      type="button"
+                      onClick={() =>
+                        setDraft({
+                          ...draft,
+                          serviceAddress: addr,
+                          clientName: draft.clientName || addr,
+                        })
+                      }
+                      className={[
+                        "px-3 py-1 rounded-xl text-sm font-semibold transition",
+                        draft.serviceAddress === addr
+                          ? "bg-[#007AFF] text-white"
+                          : "bg-white border border-black/10 hover:border-[#007AFF] text-[#1D1D1F]",
+                      ].join(" ")}
+                    >
+                      {addr}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Bill To */}
             <div>
               <label className="block text-base font-semibold text-[#515154] mb-2">
                 {t.billToLabel}
@@ -404,10 +493,10 @@ export function InvoiceEditorModal({
                 value={draft.clientName}
                 onChange={(e) => setDraft({ ...draft, clientName: e.target.value })}
                 placeholder={t.billToPlaceholder}
-                className="w-full h-14 px-4 rounded-2xl bg-[#F5F5F7] focus:bg-white border-2 border-transparent focus:border-[#007AFF] text-xl font-semibold outline-none transition"
+                className="w-full h-13 px-4 rounded-2xl bg-white border-2 border-black/10 focus:border-[#007AFF] text-lg font-semibold outline-none transition"
               />
               {quickClients.length > 0 && (
-                <div className="flex flex-wrap items-center gap-2 mt-2.5">
+                <div className="flex flex-wrap items-center gap-2 mt-2">
                   <span className="text-sm text-[#86868B]">{t.quickPickClient}</span>
                   {quickClients.map((c) => (
                     <button
@@ -418,7 +507,7 @@ export function InvoiceEditorModal({
                         "px-3 py-1 rounded-xl text-sm font-semibold transition",
                         draft.clientName === c
                           ? "bg-[#007AFF] text-white"
-                          : "bg-[#F5F5F7] hover:bg-[#E8E8ED] text-[#1D1D1F]",
+                          : "bg-white border border-black/10 hover:border-[#007AFF] text-[#1D1D1F]",
                       ].join(" ")}
                     >
                       {c}
@@ -428,17 +517,44 @@ export function InvoiceEditorModal({
               )}
             </div>
 
-            <div>
-              <label className="block text-sm font-semibold text-[#515154] mb-1.5">
-                {t.clientDetailsLabel}
-              </label>
-              <input
-                type="text"
-                value={draft.clientDetails}
-                onChange={(e) => setDraft({ ...draft, clientDetails: e.target.value })}
-                placeholder={t.clientDetailsPlaceholder}
-                className="w-full h-12 px-4 rounded-2xl bg-[#F5F5F7] focus:bg-white border-2 border-transparent focus:border-[#007AFF] text-base outline-none transition"
-              />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-semibold text-[#515154] mb-1.5">
+                  {t.clientAbnLabel}
+                </label>
+                <input
+                  type="text"
+                  value={draft.clientAbn}
+                  onChange={(e) => setDraft({ ...draft, clientAbn: e.target.value })}
+                  placeholder={t.clientAbnPlaceholder}
+                  className="w-full h-11 px-3.5 rounded-xl bg-white border border-black/10 focus:border-[#007AFF] text-base outline-none transition"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-semibold text-[#515154] mb-1.5">
+                  {t.clientDetailsLabel}
+                </label>
+                <input
+                  type="text"
+                  value={draft.clientDetails}
+                  onChange={(e) => setDraft({ ...draft, clientDetails: e.target.value })}
+                  placeholder={t.clientDetailsPlaceholder}
+                  className="w-full h-11 px-3.5 rounded-xl bg-white border border-black/10 focus:border-[#007AFF] text-base outline-none transition"
+                />
+              </div>
+            </div>
+
+            {showAtoThousandWarning && (
+              <div className="p-3.5 rounded-xl bg-[#FF9500]/12 border border-[#FF9500]/30 text-[#995200] text-sm font-semibold flex items-start gap-2">
+                <AlertCircle size={18} className="shrink-0 mt-0.5" />
+                <span>{t.atoThousandHint}</span>
+              </div>
+            )}
+
+            <div className="text-xs text-[#515154] flex items-center gap-1.5 pt-1">
+              <FileText size={14} className="text-[#007AFF] shrink-0" />
+              <span>{t.pdfFilePreviewLabel}</span>
+              <strong className="text-[#1D1D1F] break-all">{pdfFileNamePreview}</strong>
             </div>
           </div>
 
@@ -446,7 +562,7 @@ export function InvoiceEditorModal({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-base font-semibold text-[#515154] mb-2">
-                {t.issueDateLabel}
+                {t.issueDateLabel} ({formatAuDate(draft.issueDate)})
               </label>
               <input
                 type="date"
@@ -458,7 +574,9 @@ export function InvoiceEditorModal({
 
             <div>
               <div className="flex items-center justify-between mb-2">
-                <label className="text-base font-semibold text-[#515154]">{t.dueDateLabel}</label>
+                <label className="text-base font-semibold text-[#515154]">
+                  {t.dueDateLabel} ({formatAuDate(draft.dueDate)})
+                </label>
                 <div className="flex gap-1.5">
                   {(
                     [
@@ -539,7 +657,7 @@ export function InvoiceEditorModal({
                           {localizeDescription(rec.description, config.descriptions, lang)}
                         </p>
                         <p className="text-xs text-[#86868B]">
-                          {rec.date}
+                          {formatAuDate(rec.date)}
                           {rec.location ? ` · ${rec.location}` : ""}
                         </p>
                       </div>
@@ -606,7 +724,26 @@ export function InvoiceEditorModal({
                     </div>
                   )}
 
-                  <div className="grid grid-cols-3 gap-2.5">
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                    <div>
+                      <label className="block text-xs font-semibold text-[#86868B] mb-1">
+                        {t.qtyShort}
+                      </label>
+                      <input
+                        type="number"
+                        min="1"
+                        step="1"
+                        inputMode="numeric"
+                        value={item.quantity ?? 1}
+                        onChange={(e) =>
+                          updateItem(idx, {
+                            quantity: Math.max(1, parseInt(e.target.value, 10) || 1),
+                          })
+                        }
+                        className="w-full h-11 px-3 rounded-xl bg-white border border-black/10 text-base font-semibold tabular-nums outline-none"
+                      />
+                    </div>
+
                     <div>
                       <label className="block text-xs font-semibold text-[#86868B] mb-1">
                         {t.partsShort} ($)
@@ -659,7 +796,7 @@ export function InvoiceEditorModal({
 
                     <div>
                       <label className="block text-xs font-semibold text-[#1D1D1F] mb-1">
-                        {t.totalAmount} ($)
+                        {t.totalAmount} (AUD $)
                       </label>
                       <input
                         type="number"
@@ -704,7 +841,7 @@ export function InvoiceEditorModal({
                 <span>${totals.gst.toFixed(2)}</span>
               </div>
               <div className="flex justify-between text-2xl font-bold text-[#1D1D1F] pt-2 border-t border-black/10">
-                <span>{t.totalAmount}</span>
+                <span>Total (AUD)</span>
                 <span>${totals.total.toFixed(2)}</span>
               </div>
             </div>
@@ -756,9 +893,19 @@ export function InvoicePreviewModal({
   if (!invoice) return null;
 
   const isPaid = invoice.status === "Paid";
+  const isTaxInv = isAustralianTaxInvoice(invoice, business);
   const subtotalExGst = Math.max(0, invoice.total - invoice.gstTotal);
+  const balanceDue = isPaid ? 0 : invoice.total;
+  const formattedSellerAbn = formatAuAbn(business.businessAbn);
+  const formattedBuyerAbn = formatAuAbn(invoice.clientAbn);
+  const formattedBsb = formatAuBsb(business.bankBsb);
+  const pdfFileName = buildInvoicePdfFileName(invoice);
+
   const hasBank = Boolean(
-    business.bankAccountName || business.bankBsb || business.bankAccountNumber
+    business.bankAccountName ||
+      business.bankBsb ||
+      business.bankAccountNumber ||
+      business.payId
   );
 
   return (
@@ -820,9 +967,9 @@ export function InvoicePreviewModal({
           </div>
         </div>
 
-        {/* Visual Tax Invoice Sheet */}
+        {/* Visual Australian Tax Invoice Sheet */}
         <div className="flex-1 overflow-y-auto p-6 sm:p-8 bg-[#F5F5F7]">
-          {!business.businessName && (
+          {(!business.businessName || !business.businessAbn) && (
             <div className="mb-4 p-4 rounded-2xl bg-[#007AFF]/10 border border-[#007AFF]/20 flex items-center justify-between gap-3">
               <span className="text-base font-medium text-[#1D1D1F]">
                 {t.businessModalHint}
@@ -840,56 +987,90 @@ export function InvoicePreviewModal({
             </div>
           )}
 
-          <div className="bg-white rounded-3xl p-6 sm:p-10 shadow-sm border border-black/5 space-y-7">
-            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 pb-6 border-b border-black/[0.07]">
+          <div className="bg-white rounded-3xl p-6 sm:p-10 shadow-sm border border-black/5 space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4 pb-6 border-b border-black/[0.08]">
               <div>
                 <h2 className="text-2xl font-extrabold text-[#1D1D1F]">
                   {business.businessName || t.appName}
                 </h2>
                 <div className="text-sm text-[#515154] mt-1 space-y-0.5">
-                  {business.businessAbn && <p>ABN: {business.businessAbn}</p>}
+                  {formattedSellerAbn && (
+                    <p className="font-bold text-[#1D1D1F]">ABN: {formattedSellerAbn}</p>
+                  )}
                   {business.businessAddress && <p>{business.businessAddress}</p>}
-                  {business.businessPhone && <p>{business.businessPhone}</p>}
-                  {business.businessEmail && <p>{business.businessEmail}</p>}
+                  {business.businessPhone && <p>Phone: {business.businessPhone}</p>}
+                  {business.businessEmail && <p>Email: {business.businessEmail}</p>}
                 </div>
               </div>
               <div className="sm:text-right">
                 <p className="text-2xl font-extrabold tracking-wide text-[#1D1D1F]">
-                  {business.businessAbn || invoice.gstTotal > 0 ? "TAX INVOICE" : "INVOICE"}
+                  {isTaxInv ? "TAX INVOICE" : "INVOICE"}
                 </p>
-                <p className="text-lg font-bold text-[#007AFF]">{invoice.invoiceNumber}</p>
+                <p className="text-lg font-bold text-[#007AFF]">
+                  Invoice # {invoice.invoiceNumber}
+                </p>
               </div>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="p-4 rounded-2xl bg-[#FAFAFC] border border-black/[0.05]">
-                <p className="text-xs font-bold uppercase tracking-wider text-[#86868B]">
-                  Bill To
-                </p>
-                <p className="text-xl font-bold text-[#1D1D1F] mt-1">
-                  {invoice.clientName || "Customer"}
-                </p>
-                {invoice.clientDetails && (
-                  <p className="text-sm text-[#515154] mt-1 whitespace-pre-line">
-                    {invoice.clientDetails}
+              <div className="p-4 rounded-2xl bg-[#FAFAFC] border border-black/[0.05] space-y-2">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-wider text-[#86868B]">
+                    Bill To (Customer)
                   </p>
+                  <p className="text-lg font-bold text-[#1D1D1F] mt-0.5">
+                    {invoice.clientName || invoice.serviceAddress || "Customer"}
+                  </p>
+                  {formattedBuyerAbn && (
+                    <p className="text-sm text-[#515154]">
+                      <strong>ABN:</strong> {formattedBuyerAbn}
+                    </p>
+                  )}
+                  {invoice.clientDetails && (
+                    <p className="text-sm text-[#515154] mt-0.5 whitespace-pre-line">
+                      {invoice.clientDetails}
+                    </p>
+                  )}
+                </div>
+
+                {invoice.serviceAddress && (
+                  <div className="pt-2 border-t border-black/[0.07]">
+                    <p className="text-xs font-bold uppercase tracking-wider text-[#86868B]">
+                      Job / Service Address
+                    </p>
+                    <p className="text-base font-bold text-[#1D1D1F] mt-0.5">
+                      {invoice.serviceAddress}
+                    </p>
+                  </div>
                 )}
               </div>
 
               <div className="p-4 rounded-2xl bg-[#FAFAFC] border border-black/[0.05] space-y-1.5 text-sm tabular-nums">
                 <div className="flex justify-between">
+                  <span className="text-[#515154]">Invoice Number</span>
+                  <span className="font-bold text-[#1D1D1F]">{invoice.invoiceNumber}</span>
+                </div>
+                <div className="flex justify-between">
                   <span className="text-[#515154]">{t.issueDateLabel}</span>
-                  <span className="font-bold text-[#1D1D1F]">{invoice.issueDate}</span>
+                  <span className="font-bold text-[#1D1D1F]">
+                    {formatAuDate(invoice.issueDate)}
+                  </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-[#515154]">{t.dueDateLabel}</span>
-                  <span className="font-bold text-[#1D1D1F]">{invoice.dueDate}</span>
+                  <span className="font-bold text-[#1D1D1F]">
+                    {formatAuDate(invoice.dueDate)}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-[#515154]">Currency</span>
+                  <span className="font-bold text-[#1D1D1F]">AUD ($)</span>
                 </div>
                 {isPaid && invoice.paidDate && (
                   <div className="flex justify-between text-[#1E9E49]">
                     <span>{t.statusPaid}</span>
                     <span className="font-bold">
-                      {invoice.paidDate} ({invoice.paymentMethod})
+                      {formatAuDate(invoice.paidDate)} ({invoice.paymentMethod})
                     </span>
                   </div>
                 )}
@@ -897,80 +1078,124 @@ export function InvoicePreviewModal({
             </div>
 
             {/* Items Table */}
-            <div className="border border-black/[0.07] rounded-2xl overflow-hidden">
+            <div className="border border-black/[0.07] rounded-2xl overflow-x-auto">
               <table className="w-full text-left border-collapse">
                 <thead>
-                  <tr className="bg-[#F5F5F7] text-xs font-bold uppercase text-[#86868B]">
-                    <th className="py-3 px-4">Date</th>
-                    <th className="py-3 px-4">Description</th>
-                    <th className="py-3 px-4 text-right">GST</th>
-                    <th className="py-3 px-4 text-right">Amount</th>
+                  <tr className="bg-[#F5F5F7] text-xs font-bold uppercase text-[#6E6E73]">
+                    <th className="py-3 px-3.5">Date</th>
+                    <th className="py-3 px-3.5">Description</th>
+                    <th className="py-3 px-3 text-right">Qty</th>
+                    <th className="py-3 px-3.5 text-right">Excl. GST</th>
+                    <th className="py-3 px-3.5 text-right">{isTaxInv ? "GST (10%)" : "GST"}</th>
+                    <th className="py-3 px-3.5 text-right">Amount (AUD)</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-black/[0.06] text-base">
-                  {invoice.items.map((item) => (
-                    <tr key={item.id}>
-                      <td className="py-3.5 px-4 text-sm text-[#515154] tabular-nums">
-                        {item.date}
-                      </td>
-                      <td className="py-3.5 px-4 font-semibold text-[#1D1D1F]">
-                        {item.description}
-                      </td>
-                      <td className="py-3.5 px-4 text-right tabular-nums text-[#515154]">
-                        ${(item.gst || 0).toFixed(2)}
-                      </td>
-                      <td className="py-3.5 px-4 text-right font-bold tabular-nums text-[#1D1D1F]">
-                        ${(item.total || 0).toFixed(2)}
-                      </td>
-                    </tr>
-                  ))}
+                <tbody className="divide-y divide-black/[0.06] text-sm sm:text-base">
+                  {invoice.items.map((item) => {
+                    const qty = Math.max(1, Number(item.quantity) || 1);
+                    const unitExGst = Math.max(0, (item.total || 0) - (item.gst || 0)) / qty;
+                    return (
+                      <tr key={item.id}>
+                        <td className="py-3.5 px-3.5 text-sm text-[#515154] tabular-nums whitespace-nowrap">
+                          {formatAuDate(item.date)}
+                        </td>
+                        <td className="py-3.5 px-3.5">
+                          <div className="font-semibold text-[#1D1D1F]">{item.description}</div>
+                          {(item.parts || 0) > 0 && (
+                            <div className="text-xs text-[#6E6E73]">
+                              Includes materials / parts: ${(item.parts || 0).toFixed(2)}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3.5 px-3 text-right tabular-nums text-[#515154]">
+                          {qty}
+                        </td>
+                        <td className="py-3.5 px-3.5 text-right tabular-nums text-[#515154]">
+                          ${unitExGst.toFixed(2)}
+                        </td>
+                        <td className="py-3.5 px-3.5 text-right tabular-nums text-[#515154]">
+                          ${(item.gst || 0).toFixed(2)}
+                        </td>
+                        <td className="py-3.5 px-3.5 text-right font-bold tabular-nums text-[#1D1D1F]">
+                          ${(item.total || 0).toFixed(2)}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
 
             {/* Totals */}
-            <div className="flex justify-end">
-              <div className="w-full sm:w-72 p-4 rounded-2xl bg-[#FAFAFC] border border-black/[0.06] space-y-1.5 tabular-nums">
+            <div className="flex flex-col items-end gap-2">
+              <div className="w-full sm:w-80 p-4 rounded-2xl bg-[#FAFAFC] border border-black/[0.06] space-y-1.5 tabular-nums">
                 <div className="flex justify-between text-sm text-[#515154]">
-                  <span>Subtotal (excl. GST)</span>
+                  <span>Subtotal (Excl. GST)</span>
                   <span>${subtotalExGst.toFixed(2)}</span>
                 </div>
                 <div className="flex justify-between text-sm text-[#515154]">
-                  <span>GST</span>
+                  <span>{isTaxInv ? "Total GST (10%)" : "GST"}</span>
                   <span>${invoice.gstTotal.toFixed(2)}</span>
                 </div>
                 <div className="flex justify-between text-xl font-extrabold text-[#1D1D1F] pt-2 border-t border-black/10">
-                  <span>Total AUD</span>
+                  <span>Total (AUD)</span>
                   <span>${invoice.total.toFixed(2)}</span>
                 </div>
+                <div
+                  className={[
+                    "flex justify-between text-sm font-bold pt-2 border-t border-dashed border-black/15",
+                    isPaid ? "text-[#1E9E49]" : "text-[#007AFF]",
+                  ].join(" ")}
+                >
+                  <span>Balance Due (AUD)</span>
+                  <span>${balanceDue.toFixed(2)}</span>
+                </div>
               </div>
+
+              <p className="text-xs text-[#6E6E73]">
+                {isTaxInv
+                  ? "Total price includes GST. All amounts are in Australian Dollars (AUD)."
+                  : "No GST has been charged. All amounts are in Australian Dollars (AUD)."}
+              </p>
             </div>
 
             {(hasBank || invoice.notes) && (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 border-t border-black/[0.06] text-sm">
                 {hasBank && (
                   <div className="p-4 rounded-2xl bg-[#F5F5F7] space-y-1">
-                    <p className="text-xs font-bold uppercase text-[#86868B]">Payment Details</p>
+                    <p className="text-xs font-bold uppercase text-[#86868B]">
+                      How to Pay (Australian EFT / PayID)
+                    </p>
                     {business.bankAccountName && (
                       <p>
-                        <strong>Account:</strong> {business.bankAccountName}
+                        <strong>Account Name:</strong> {business.bankAccountName}
                       </p>
                     )}
-                    {business.bankBsb && (
+                    {formattedBsb && (
                       <p>
-                        <strong>BSB:</strong> {business.bankBsb}
+                        <strong>BSB:</strong> {formattedBsb}
                       </p>
                     )}
                     {business.bankAccountNumber && (
                       <p>
-                        <strong>Account #:</strong> {business.bankAccountNumber}
+                        <strong>Account Number:</strong> {business.bankAccountNumber}
                       </p>
                     )}
+                    {business.payId && (
+                      <p>
+                        <strong>PayID:</strong> {business.payId}
+                      </p>
+                    )}
+                    <p className="text-xs text-[#515154] pt-1">
+                      Reference: <strong>{invoice.invoiceNumber}</strong>
+                    </p>
                   </div>
                 )}
                 {invoice.notes && (
                   <div className="p-4 rounded-2xl bg-[#F5F5F7] space-y-1">
-                    <p className="text-xs font-bold uppercase text-[#86868B]">Notes</p>
+                    <p className="text-xs font-bold uppercase text-[#86868B]">
+                      Notes &amp; Payment Terms
+                    </p>
                     <p className="whitespace-pre-line">{invoice.notes}</p>
                   </div>
                 )}
@@ -980,23 +1205,29 @@ export function InvoicePreviewModal({
         </div>
 
         {/* Bottom PDF & Print Bar */}
-        <div className="px-6 py-4 border-t border-black/[0.06] bg-white flex flex-col sm:flex-row gap-3">
-          <a
-            href={`/api/invoices/${encodeURIComponent(invoice.id)}/pdf`}
-            className="flex-1 h-14 rounded-2xl bg-[#007AFF] hover:bg-[#0066D6] text-white text-lg font-bold flex items-center justify-center gap-2.5 shadow-md shadow-[#007AFF]/20 transition"
-          >
-            <Download size={22} />
-            <span>{t.downloadPdfBtn}</span>
-          </a>
-          <a
-            href={`/api/invoices/${encodeURIComponent(invoice.id)}/print?autoprint=1`}
-            target="_blank"
-            rel="noreferrer"
-            className="flex-1 h-14 rounded-2xl bg-[#F5F5F7] hover:bg-[#E8E8ED] text-[#1D1D1F] text-lg font-semibold flex items-center justify-center gap-2.5 transition"
-          >
-            <Printer size={22} />
-            <span>{t.printInvoiceBtn}</span>
-          </a>
+        <div className="px-6 py-4 border-t border-black/[0.06] bg-white space-y-2">
+          <div className="flex flex-col sm:flex-row gap-3">
+            <a
+              href={`/api/invoices/${encodeURIComponent(invoice.id)}/pdf`}
+              download={pdfFileName}
+              className="flex-1 h-14 rounded-2xl bg-[#007AFF] hover:bg-[#0066D6] text-white text-lg font-bold flex items-center justify-center gap-2.5 shadow-md shadow-[#007AFF]/20 transition"
+            >
+              <Download size={22} />
+              <span>{t.downloadPdfBtn}</span>
+            </a>
+            <a
+              href={`/api/invoices/${encodeURIComponent(invoice.id)}/print?autoprint=1`}
+              target="_blank"
+              rel="noreferrer"
+              className="sm:w-48 h-14 rounded-2xl bg-[#F5F5F7] hover:bg-[#E8E8ED] text-[#1D1D1F] text-lg font-semibold flex items-center justify-center gap-2.5 transition"
+            >
+              <Printer size={22} />
+              <span>{t.printInvoiceBtn}</span>
+            </a>
+          </div>
+          <p className="text-xs text-center text-[#86868B] truncate">
+            {t.pdfFilePreviewLabel} <strong className="text-[#515154]">{pdfFileName}</strong>
+          </p>
         </div>
       </div>
     </div>
@@ -1023,10 +1254,18 @@ export function BusinessProfileModal({
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (open) setForm(profile);
+    if (open) {
+      setForm({
+        ...profile,
+        gstRegistered: profile.gstRegistered ?? true,
+        payId: profile.payId || "",
+      });
+    }
   }, [open, profile]);
 
   if (!open) return null;
+
+  const isGstOn = form.gstRegistered !== false;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1089,7 +1328,7 @@ export function BusinessProfileModal({
                 value={form.businessAbn}
                 onChange={(e) => setForm({ ...form, businessAbn: e.target.value })}
                 placeholder={t.bizAbnPlaceholder}
-                className="w-full h-12 px-4 rounded-2xl bg-[#F5F5F7] focus:bg-white border-2 border-transparent focus:border-[#007AFF] text-base outline-none"
+                className="w-full h-12 px-4 rounded-2xl bg-[#F5F5F7] focus:bg-white border-2 border-transparent focus:border-[#007AFF] text-base font-mono outline-none"
               />
             </div>
 
@@ -1104,6 +1343,24 @@ export function BusinessProfileModal({
                 placeholder="INV-"
                 className="w-full h-12 px-4 rounded-2xl bg-[#F5F5F7] focus:bg-white border-2 border-transparent focus:border-[#007AFF] text-base font-mono outline-none"
               />
+            </div>
+
+            {/* GST Registration Toggle */}
+            <div className="sm:col-span-2 p-3.5 rounded-2xl bg-[#F5F5F7] flex items-center justify-between gap-4">
+              <div>
+                <p className="text-base font-bold text-[#1D1D1F]">{t.gstRegisteredLabel}</p>
+                <p className="text-xs text-[#6E6E73] mt-0.5">{t.gstRegisteredHint}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setForm({ ...form, gstRegistered: !isGstOn })}
+                className={[
+                  "w-16 h-9 rounded-full transition-colors p-1 shrink-0 flex items-center",
+                  isGstOn ? "bg-[#1E9E49] justify-end" : "bg-[#C7C7CC] justify-start",
+                ].join(" ")}
+              >
+                <span className="w-7 h-7 rounded-full bg-white shadow-sm block" />
+              </button>
             </div>
 
             <div>
@@ -1181,6 +1438,18 @@ export function BusinessProfileModal({
                   value={form.bankAccountNumber}
                   onChange={(e) => setForm({ ...form, bankAccountNumber: e.target.value })}
                   className="w-full h-12 px-4 rounded-2xl bg-[#F5F5F7] focus:bg-white border-2 border-transparent focus:border-[#007AFF] text-base font-mono outline-none"
+                />
+              </div>
+              <div className="sm:col-span-2">
+                <label className="block text-sm font-semibold text-[#515154] mb-1">
+                  {t.payIdLabel}
+                </label>
+                <input
+                  type="text"
+                  value={form.payId || ""}
+                  onChange={(e) => setForm({ ...form, payId: e.target.value })}
+                  placeholder={t.payIdPlaceholder}
+                  className="w-full h-12 px-4 rounded-2xl bg-[#F5F5F7] focus:bg-white border-2 border-transparent focus:border-[#007AFF] text-base outline-none"
                 />
               </div>
             </div>

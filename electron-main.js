@@ -187,6 +187,29 @@ async function createWindow() {
     }
   });
 
+  mainWindow.webContents.session.on("will-download", (_event, item) => {
+    const filename = item.getFilename();
+    const downloadsDir = app.getPath("downloads");
+    const lower = filename.toLowerCase();
+    item.setSaveDialogOptions({
+      title: lower.endsWith(".pdf") ? "Export Invoice PDF" : "Save File",
+      defaultPath: path.join(downloadsDir, filename),
+      filters: lower.endsWith(".pdf")
+        ? [{ name: "PDF Document (*.pdf)", extensions: ["pdf"] }]
+        : lower.endsWith(".xlsx")
+          ? [{ name: "Excel Workbook (*.xlsx)", extensions: ["xlsx"] }]
+          : undefined,
+    });
+    item.once("done", (_e, state) => {
+      if (state === "completed") {
+        const savedPath = item.getSavePath();
+        if (savedPath && fs.existsSync(savedPath)) {
+          shell.showItemInFolder(savedPath);
+        }
+      }
+    });
+  });
+
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith("http://") || url.startsWith("https://")) {
       shell.openExternal(url);

@@ -5,12 +5,14 @@ export type ActiveTab = "entry" | "records" | "invoices" | "backup";
 export interface BusinessProfile {
   businessName: string;
   businessAbn: string;
+  gstRegistered?: boolean;
   businessPhone: string;
   businessEmail: string;
   businessAddress: string;
   bankAccountName: string;
   bankBsb: string;
   bankAccountNumber: string;
+  payId?: string;
   invoicePrefix: string;
 }
 
@@ -58,6 +60,7 @@ export interface InvoiceLineItem {
   recordId?: string;
   date: string;
   description: string;
+  quantity?: number;
   parts: number;
   gst: number;
   total: number;
@@ -72,6 +75,8 @@ export interface InvoiceRecord {
   issueDate: string;
   dueDate: string;
   clientName: string;
+  clientAbn?: string;
+  serviceAddress: string;
   clientDetails: string;
   items: InvoiceLineItem[];
   linkedRecordIds: string[];

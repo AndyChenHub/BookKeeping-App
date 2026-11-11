@@ -72,16 +72,19 @@ import {
   buildDraftFromInvoice,
   type InvoiceDraft,
 } from "./components/InvoiceModals";
+import { buildInvoicePdfFileName, formatAuDate } from "./invoice-utils";
 
 const emptyBusinessProfile: BusinessProfile = {
   businessName: "",
   businessAbn: "",
+  gstRegistered: true,
   businessPhone: "",
   businessEmail: "",
   businessAddress: "",
   bankAccountName: "",
   bankBsb: "",
   bankAccountNumber: "",
+  payId: "",
   invoicePrefix: "INV-",
 };
 
@@ -713,6 +716,8 @@ export default function App() {
       return (
         inv.invoiceNumber.toLowerCase().includes(q) ||
         inv.clientName.toLowerCase().includes(q) ||
+        (inv.serviceAddress || "").toLowerCase().includes(q) ||
+        (inv.clientAbn || "").toLowerCase().includes(q) ||
         inv.clientDetails.toLowerCase().includes(q) ||
         inv.notes.toLowerCase().includes(q) ||
         itemsText.includes(q) ||
@@ -1928,6 +1933,7 @@ export default function App() {
                 {filteredInvoices.map((inv) => {
                   const isPaid = inv.status === "Paid";
                   const isOverdue = !isPaid && inv.dueDate < todayStr;
+                  const pdfFileName = buildInvoicePdfFileName(inv);
                   const itemsPreview = inv.items
                     .map((it) => localizeDescription(it.description, config.descriptions, lang))
                     .filter(Boolean)
@@ -1969,23 +1975,30 @@ export default function App() {
                           )}
                         </div>
 
+                        {inv.serviceAddress && (
+                          <div className="flex items-center gap-1.5 text-base font-semibold text-[#515154]">
+                            <MapPin size={16} className="text-[#007AFF] shrink-0" />
+                            <span>{inv.serviceAddress}</span>
+                          </div>
+                        )}
+
                         <p className="text-lg font-medium text-[#1D1D1F] break-words">
                           {itemsPreview}
                         </p>
 
                         <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm sm:text-base text-[#515154] tabular-nums">
                           <span>
-                            {t.issueDateLabel}: <strong>{inv.issueDate}</strong>
+                            {t.issueDateLabel}: <strong>{formatAuDate(inv.issueDate)}</strong>
                           </span>
                           <span>
                             {t.dueDateLabel}:{" "}
                             <strong className={isOverdue ? "text-[#FF3B30]" : ""}>
-                              {inv.dueDate}
+                              {formatAuDate(inv.dueDate)}
                             </strong>
                           </span>
                           {isPaid && inv.paidDate && (
                             <span className="text-[#1E9E49] font-semibold">
-                              {t.paidOnLabel(inv.paidDate)} (
+                              {t.paidOnLabel(formatAuDate(inv.paidDate))} (
                               {localizePayment(inv.paymentMethod, lang)})
                             </span>
                           )}
@@ -2004,7 +2017,7 @@ export default function App() {
                           )}
                         </div>
 
-                        {/* 4 Unmistakable Senior-Friendly Action Buttons */}
+                        {/* Unmistakable Senior-Friendly Action Buttons (incl. direct 1-tap Export PDF) */}
                         <div className="flex flex-wrap items-center gap-2">
                           <button
                             type="button"
@@ -2020,10 +2033,20 @@ export default function App() {
                             <span>{isPaid ? t.markUnpaidBtn : t.markPaidBtn}</span>
                           </button>
 
+                          <a
+                            href={`/api/invoices/${encodeURIComponent(inv.id)}/pdf`}
+                            download={pdfFileName}
+                            title={pdfFileName}
+                            className="h-12 px-4 rounded-xl bg-[#007AFF] hover:bg-[#0066D6] text-white font-bold text-base flex items-center gap-1.5 shadow-sm transition active:scale-95"
+                          >
+                            <Download size={18} />
+                            <span>{t.exportPdfBtn}</span>
+                          </a>
+
                           <button
                             type="button"
                             onClick={() => setPreviewInvoiceId(inv.id)}
-                            className="h-12 px-4 rounded-xl bg-[#007AFF]/12 hover:bg-[#007AFF]/20 text-[#007AFF] font-bold text-base flex items-center gap-1.5 transition"
+                            className="h-12 px-3.5 rounded-xl bg-[#007AFF]/12 hover:bg-[#007AFF]/20 text-[#007AFF] font-bold text-base flex items-center gap-1.5 transition"
                           >
                             <Eye size={18} />
                             <span>{t.viewPrintBtn}</span>
