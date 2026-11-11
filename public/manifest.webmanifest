@@ -1,0 +1,23 @@
+{
+  "name": "BookKeeping Ledger",
+  "short_name": "BookKeeping",
+  "description": "Simple, reliable bookkeeping for computer and phone.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F5F5F7",
+  "theme_color": "#FFFFFF",
+  "icons": [
+    {
+      "src": "/icon-256.png",
+      "sizes": "256x256",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}

@@ -1,4 +1,34 @@
-# Excel Storage Directory
-/data/*.xlsx
-!/data/dictionary.xlsx
-!/data/config.xlsx
+# Dependencies
+node_modules/
+
+# Build & Packaged Executables
+dist/
+dist-electron/
+release/
+*.tsbuildinfo
+
+# Runtime Data, Excel Books & Backups
+data/
+BookKeepingData/
+~$*.xlsx
+*.tmp
+
+# Environment Variables
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS & Editor Files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/

@@ -1,51 +1,61 @@
-# Business Transaction Digitizer - Dashboard & Configuration Guide
+# BookKeeping
 
-This guide explains how to manage the data and configuration for your application.
-
-## 📂 Data Structure
-All your data is stored in the `data/` folder:
-- **`config.xlsx`**: Contains your Locations, Agents, and Descriptions (Mandarin/English mappings).
-- **`YYYYMMBook.xlsx`**: Monthly transaction logs (e.g., `202602Book.xlsx`).
+A simple, Apple-inspired bookkeeping app designed for effortless daily use on both **Windows PC** and **Phone (iPhone / Android)** — backed by a single shared local server, standardized English Excel workbooks, automatic daily backups, and one-tap restore.
 
 ---
 
-## 🛠️ Managing Configuration (`config.xlsx`)
-You can manage your dropdowns and descriptions in two ways:
+## 🚀 Quick Start (Using the `.exe`)
 
-### 1. Through the App (Recommended)
-Use the **"+ 新增 Add"** buttons within the application to add new:
-- **Locations** (地点)
-- **Agents** (经办人)
-- **Descriptions** (描述内容)
-
-Changes made through the app are saved instantly to `config.xlsx`.
-
-### 2. Manually Editing Excel
-You can open `data/config.xlsx` in Microsoft Excel to make bulk changes:
-- **Locations Sheet**: Add or remove names in the first column.
-- **Agents Sheet**: Add or remove names in the first column.
-- **Descriptions Sheet**: Column A is Mandarin (ZH), Column B is English (EN).
-
-*Note: Close Excel before running the app to avoid "File in use" errors.*
+1. Double-click **`release\BookKeeping.exe`** (you can also pin it to your Taskbar or create a Desktop shortcut).
+2. The app starts its built-in server automatically and opens the ledger window.
+3. If Windows Defender Firewall prompts you on first launch, check **Private networks** and click **Allow access** so your phone can connect over Wi-Fi.
 
 ---
 
-## 📊 Viewing the Dashboard (Monthly Books)
-Each month, a new Excel file is created (e.g., `202602Book.xlsx`).
-- These files contain all transactions saved during that month.
-- You can open these files in Excel to create charts, pivot tables, or summaries.
-- **Appending Data**: The app is designed to **append** new transactions to the end of the existing list. It will not overwrite your previous entries.
+## 📱 Using on Computer & Phone Together
+
+Both your computer and phone connect to the **same server** running inside `BookKeeping.exe`, so entries and edits made on either device appear on both immediately:
+
+1. Connect your phone to the **same Wi-Fi** as the computer.
+2. Click **Connect Phone (手机扫码)** at the top right of the app on your computer.
+3. Open your phone's **Camera** and point it at the QR code.
+4. *Optional:* On iPhone Safari, tap **Share → Add to Home Screen** to launch BookKeeping anytime like a native iOS app.
 
 ---
 
-## 💻 Making Changes to the App
-If you want to modify the layout or logic:
-1. **Frontend**: Edit `src/App.tsx` for UI changes.
-2. **Backend**: Edit `server.ts` for file handling or API logic.
-3. **Styles**: Use Tailwind CSS classes directly in the components.
+## ✨ Key Features
 
-To run the app after making changes:
+- **Senior-Friendly Apple Design:** Clean cards, high-contrast typography, large touch targets, and an uncluttered 3-step entry flow.
+- **1-Tap Language Switch (`中文 | EN`):** Switch the screen between Chinese and English anytime. Regardless of screen language, Excel spreadsheets are always saved cleanly in English.
+- **View, Edit & Delete Records:** Browse monthly totals, filter by Cash or Card, search entries, and fix or delete any past record directly in the app (automatically updating the `.xlsx` file).
+- **Automatic Daily Backups & Easy Restore:**
+  - Automatically backs up `config.xlsx` and all monthly Excel books every day into `data/backups/`.
+  - Create a manual backup anytime with **Back Up Now**.
+  - Restore any previous day with one click (**Restore** automatically creates a safety backup of your current data first so nothing is ever lost).
+
+---
+
+## 📂 Data & Excel Files
+
+By default, data is stored in the `data/` folder (or `BookKeepingData/` when moving the portable `.exe` elsewhere):
+- `config.xlsx` — Saved Items (Mandarin ↔ English), Locations, People/Agents, and settings.
+- `YYYY/YYYYMMBook.xlsx` — Monthly transaction ledgers (e.g., `2026/202611Book.xlsx`).
+- `backups/` — Timestamped daily, manual, and pre-restore snapshots.
+
+*Tip: Close any open `.xlsx` file in Microsoft Excel before saving or restoring inside the app so Windows does not lock the file.*
+
+---
+
+## 🛠️ Developer Commands
+
 ```bash
-npm run local
+# Start in development mode
+npm run dev
+
+# Type-check & build web + Electron bundles
+npm run lint
+npm run build
+
+# Package standalone Windows executable (outputs release/BookKeeping.exe)
+npm run electron:package
 ```
-or double-click **`run.bat`**.

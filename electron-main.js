@@ -1,97 +1,207 @@
-import { app, BrowserWindow } from 'electron';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { spawn } from 'child_process';
+import { app, BrowserWindow, dialog, shell } from "electron";
+import path from "path";
+import fs from "fs";
+import http from "http";
+import { startServer } from "./server.ts";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+let mainWindow = null;
+let serverHandle = null;
+let isQuitting = false;
 
-let mainWindow;
-let serverProcess;
-
-async function createWindow() {
-  const userDataPath = app.getPath('userData');
-  const dataDir = path.join(userDataPath, 'BusinessData');
-  
-  const appPath = app.getAppPath();
-  const serverPath = path.join(appPath, 'server.ts');
-  
-  console.log('App Path:', appPath);
-  console.log('Server Path:', serverPath);
-  
-  // Start the server process
-  // Use the local tsx binary for reliability
-  const tsxPath = path.join(appPath, 'node_modules', '.bin', 'tsx' + (process.platform === 'win32' ? '.cmd' : ''));
-  
-  serverProcess = spawn(tsxPath, [serverPath], {
-    env: { 
-      ...process.env, 
-      PORT: '3000',
-      DATA_DIR: dataDir,
-      NODE_ENV: 'production',
-      ELECTRON_RUN: 'true'
-    },
-    shell: true,
-    cwd: appPath
-  });
-
-  serverProcess.stdout.on('data', (data) => {
-    const msg = data.toString();
-    console.log(`Server: ${msg}`);
-    // If we see the server is running, we can load the URL earlier
-    if (msg.includes('Server running')) {
-      if (mainWindow) mainWindow.loadURL('http://localhost:3000');
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
     }
   });
+}
 
-  serverProcess.stderr.on('data', (data) => {
-    console.error(`Server Error: ${data}`);
+function isWritableDirectory(dirPath) {
+  try {
+    fs.mkdirSync(dirPath, { recursive: true });
+    const probe = path.join(dirPath, `.write_test_${process.pid}`);
+    fs.writeFileSync(probe, "ok");
+    fs.unlinkSync(probe);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveDataDir() {
+  if (process.env.DATA_DIR) {
+    return path.resolve(process.env.DATA_DIR);
+  }
+
+  const portableDir = process.env.PORTABLE_EXECUTABLE_DIR;
+  if (portableDir) {
+    // 1. Existing "data" folder or running right inside the project folder
+    const directData = path.join(portableDir, "data");
+    if (
+      (fs.existsSync(directData) || fs.existsSync(path.join(portableDir, "package.json"))) &&
+      isWritableDirectory(directData)
+    ) {
+      return directData;
+    }
+
+    // 2. Running from release/BookKeeping.exe inside the project workspace -> share ../data
+    const parentDir = path.resolve(portableDir, "..");
+    if (
+      path.basename(portableDir).toLowerCase() === "release" &&
+      fs.existsSync(path.join(parentDir, "package.json"))
+    ) {
+      const workspaceData = path.join(parentDir, "data");
+      if (isWritableDirectory(workspaceData)) {
+        return workspaceData;
+      }
+    }
+
+    // 3. Portable folder right next to BookKeeping.exe
+    const portableData = path.join(portableDir, "BookKeepingData");
+    if (isWritableDirectory(portableData)) {
+      return portableData;
+    }
+  }
+
+  if (!app.isPackaged) {
+    const devData = path.join(process.cwd(), "data");
+    if (isWritableDirectory(devData)) {
+      return devData;
+    }
+  }
+
+  // Fallback to Documents/BookKeepingData so user can always find their Excel files easily
+  const docsData = path.join(app.getPath("documents"), "BookKeepingData");
+  if (isWritableDirectory(docsData)) {
+    return docsData;
+  }
+
+  return path.join(app.getPath("userData"), "BookKeepingData");
+}
+
+function checkExistingBookKeepingServer(port) {
+  return new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${port}/api/health`, { timeout: 800 }, (res) => {
+      let body = "";
+      res.on("data", (chunk) => {
+        body += chunk;
+      });
+      res.on("end", () => {
+        try {
+          const parsed = JSON.parse(body);
+          resolve(Boolean(parsed && parsed.app === "bookkeeping-ledger"));
+        } catch {
+          resolve(false);
+        }
+      });
+    });
+    req.on("error", () => resolve(false));
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(false);
+    });
   });
+}
+
+async function createWindow() {
+  const appPath = app.getAppPath();
+  const unpackedDist = path.join(appPath.replace(/app\.asar$/, "app.asar.unpacked"), "dist");
+  const distDir = fs.existsSync(unpackedDist) ? unpackedDist : path.join(appPath, "dist");
+  const iconPath = path.join(distDir, "icon-256.png");
+  const dataDir = resolveDataDir();
+
+  let targetUrl = "http://127.0.0.1:3000";
+  const alreadyRunning = await checkExistingBookKeepingServer(3000);
+
+  if (!alreadyRunning) {
+    serverHandle = await startServer({
+      port: 3000,
+      dataDir,
+      distDir,
+      isElectron: true,
+      onOpenPath: async (targetPath) => {
+        await shell.openPath(targetPath);
+      },
+      onPickFolder: async () => {
+        const result = await dialog.showOpenDialog(mainWindow, {
+          title: "Select Excel Storage Folder",
+          properties: ["openDirectory", "createDirectory"],
+        });
+        if (result.canceled || !result.filePaths[0]) {
+          return null;
+        }
+        return result.filePaths[0];
+      },
+    });
+    targetUrl = `http://127.0.0.1:${serverHandle.port}`;
+  }
 
   mainWindow = new BrowserWindow({
-    width: 1300,
+    width: 1360,
     height: 900,
+    minWidth: 380,
+    minHeight: 620,
+    title: "BookKeeping",
+    icon: fs.existsSync(iconPath) ? iconPath : undefined,
+    backgroundColor: "#F5F5F7",
+    autoHideMenuBar: true,
+    show: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
     },
-    autoHideMenuBar: true,
-    title: "Business Transaction Digitizer",
-    backgroundColor: '#f4f4f5' // zinc-50 color
   });
 
-  // Fallback timeout if the "Server running" message isn't caught
-  const fallbackTimeout = setTimeout(() => {
-    if (mainWindow && !mainWindow.webContents.getURL()) {
-      mainWindow.loadURL('http://localhost:3000');
+  mainWindow.once("ready-to-show", () => {
+    if (mainWindow) {
+      mainWindow.show();
     }
-  }, 5000);
-
-  mainWindow.on('closed', () => {
-    clearTimeout(fallbackTimeout);
-    mainWindow = null;
   });
 
-  // Handle load failures (e.g. server not ready)
-  mainWindow.webContents.on('did-fail-load', () => {
-    console.log('Failed to load, retrying in 2s...');
-    setTimeout(() => {
-      if (mainWindow) mainWindow.loadURL('http://localhost:3000');
-    }, 2000);
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith("http://") || url.startsWith("https://")) {
+      shell.openExternal(url);
+    }
+    return { action: "deny" };
+  });
+
+  await mainWindow.loadURL(targetUrl);
+
+  mainWindow.on("closed", () => {
+    mainWindow = null;
   });
 }
 
-app.on('ready', createWindow);
+if (gotLock) {
+  app.whenReady().then(() => {
+    createWindow().catch((err) => {
+      dialog.showErrorBox("Failed to Start BookKeeping", String(err?.message || err));
+      app.quit();
+    });
+  });
 
-app.on('window-all-closed', () => {
-  if (serverProcess) serverProcess.kill();
-  if (process.platform !== 'darwin') {
+  app.on("window-all-closed", async () => {
+    if (isQuitting) return;
+    isQuitting = true;
+    if (serverHandle) {
+      try {
+        await serverHandle.close();
+      } catch {
+        // ignore shutdown error
+      }
+      serverHandle = null;
+    }
     app.quit();
-  }
-});
+  });
 
-app.on('activate', () => {
-  if (mainWindow === null) {
-    createWindow();
-  }
-});
+  app.on("activate", () => {
+    if (mainWindow === null) {
+      createWindow();
+    }
+  });
+}

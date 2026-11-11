@@ -1,33 +1,53 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
 }
 
 @layer base {
+  html,
   body {
-    @apply bg-zinc-50 text-zinc-900 antialiased overflow-hidden text-xl;
+    background-color: #F5F5F7;
+    color: #1D1D1F;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior-y: none;
+  }
+
+  /* Hide native number spinners so currency fields look like clean Apple Wallet inputs */
+  input[type="number"]::-webkit-inner-spin-button,
+  input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type="number"] {
+    -moz-appearance: textfield;
   }
 }
 
-.kiosk-button {
-  @apply flex flex-col items-center justify-center p-8 rounded-3xl border-2 transition-all active:scale-95 text-center;
+.apple-card {
+  background: #FFFFFF;
+  border-radius: 24px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: 0 2px 14px rgba(0, 0, 0, 0.035), 0 1px 2px rgba(0, 0, 0, 0.02);
 }
 
-.kiosk-input {
-  @apply w-full p-8 text-4xl rounded-[32px] border-4 border-zinc-200 focus:border-emerald-500 focus:ring-12 focus:ring-emerald-500/10 outline-none transition-all font-black;
-  padding-left: 6rem;
+.apple-glass {
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
 }
 
-.kiosk-input-no-icon {
-  @apply w-full p-8 text-4xl rounded-[32px] border-4 border-zinc-200 focus:border-emerald-500 focus:ring-12 focus:ring-emerald-500/10 outline-none transition-all font-black;
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
 }
 
-.label-zh {
-  @apply text-5xl font-black text-zinc-900 block mb-2 leading-tight;
+.safe-top {
+  padding-top: env(safe-area-inset-top, 0px);
 }
 
-.label-en {
-  @apply text-xl font-bold text-zinc-400 block mb-4 uppercase tracking-wider;
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
