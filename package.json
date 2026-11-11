@@ -15,7 +15,8 @@
     "local": "npm run build && cross-env NODE_ENV=production node dist-electron/server.cjs --open",
     "lint": "tsc --noEmit",
     "electron:dev": "npm run build && cross-env ELECTRON_RUN_AS_NODE= electron .",
-    "electron:package": "npm run build && electron-builder"
+    "electron:package": "node scripts/package-exe.mjs",
+    "package": "node scripts/package-exe.mjs"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.14",
@@ -67,8 +68,7 @@
           "arch": ["x64"]
         }
       ],
-      "artifactName": "BookKeeping.exe",
-      "signAndEditExecutable": false
+      "artifactName": "BookKeeping.exe"
     },
     "portable": {
       "artifactName": "BookKeeping.exe"

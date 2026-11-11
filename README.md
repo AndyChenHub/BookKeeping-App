@@ -6,8 +6,8 @@ A simple, Apple-inspired bookkeeping app designed for effortless daily use on bo
 
 ## 🚀 Quick Start (Using the `.exe`)
 
-1. Double-click **`release\BookKeeping.exe`** (you can also pin it to your Taskbar or create a Desktop shortcut).
-2. The app starts its built-in server automatically and opens the ledger window.
+1. Double-click **`BookKeeping.exe`** (also available in `release\BookKeeping.exe` — you can move it anywhere, pin it to your Taskbar, or create a Desktop shortcut).
+2. The app starts its built-in server automatically and opens the ledger window — no Node.js or `.bat` scripts needed.
 3. If Windows Defender Firewall prompts you on first launch, check **Private networks** and click **Allow access** so your phone can connect over Wi-Fi.
 
 ---

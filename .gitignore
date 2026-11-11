@@ -5,6 +5,7 @@ node_modules/
 dist/
 dist-electron/
 release/
+*.exe
 *.tsbuildinfo
 
 # Runtime Data, Excel Books & Backups
